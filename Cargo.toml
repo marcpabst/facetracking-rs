@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 dcv-color-primitives = "0.5.4"
-eye = "0.4.1"
 image = "0.24.7"
 ort = "1.15.2"
 ndarray = "0.15.6"
@@ -18,11 +17,11 @@ pollster = "0.3.0"
 env_logger = "0.10.0"
 bytemuck = { version = "1.12", features = [ "derive" ] }
 rusttype = "0.9.3"
-
+nng = "1.0.1"
 
 [dependencies.show-image]
 version = "0.13.1"
-features = ["full"]
+features = ["image"]
 
 [dependencies.nokhwa]
 version = "0.10.4"
