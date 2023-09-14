@@ -14,10 +14,12 @@ use imageproc::drawing::draw_hollow_circle_mut;
 use imageproc::drawing::draw_text_mut;
 use nalgebra::Point2;
 use ndarray_npy::ReadNpyExt;
+use std::time::SystemTime;
 use std::io::Cursor;
 use rusttype::{Font, Scale};
 
 use nng::{Aio, AioResult, Context, Protocol, Socket};
+
 
 mod face; // import face.rs
 use face::*; // import everything from face.rs
@@ -273,8 +275,6 @@ fn ngg_callback(aio: Aio, ctx: &Context, res: AioResult) {
 
 #[show_image::main]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-
-    tracing_subscriber::fmt::init();
     
     let mut last_frame = std::time::Instant::now();
 
@@ -312,16 +312,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_intra_threads(5)?
         .with_model_from_memory(blazeface_model)?;
 
-    let eye_net_enviroment = Environment::builder()
-        .with_name("EyeNet")
-        // use apple coreml backend
-        .with_execution_providers([ExecutionProvider::CoreML(Default::default())])
-        .build()?
-        .into_arc();
+    // let eye_net_enviroment = Environment::builder()
+    //     .with_name("EyeNet")
+    //     // use apple coreml backend
+    //     .with_execution_providers([ExecutionProvider::CoreML(Default::default())])
+    //     .build()?
+    //     .into_arc();
 
     let eye_net_model = include_bytes!("../face_landmarks_detector.onnx");
 
-    let eye_net_session = SessionBuilder::new(&eye_net_enviroment)?
+    let eye_net_session = SessionBuilder::new(&blazeface_enviroment)?
         .with_intra_threads(5)?
         .with_model_from_memory(eye_net_model)?;
 
@@ -341,13 +341,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // select camera
-    let index = CameraIndex::Index(1);
+    let index = CameraIndex::Index(0);
 
 
     let fps = 60;
     let fourcc = FrameFormat::MJPEG;
 
-    let resolution = Resolution::new(1920, 1080);
+    let resolution = Resolution::new(1280, 720);
     let camera_format = CameraFormat::new(resolution, fourcc, fps);
  
     let requested = RequestedFormat::new::<RgbFormat>(
@@ -573,13 +573,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into_dyn()
         .into();
 
+        let start = SystemTime::now();
         let inputs = vec![Value::from_array(eye_net_session.allocator(), &array)?];
 
         // run inference
+       
         let outputs: Vec<Value> = eye_net_session.run(inputs)?;
-
+ 
         let res: OrtOwnedTensor<f32, _> = outputs[0].try_extract()?;
         let res = res.view().deref().clone();
+
+        let end = SystemTime::now();
+        let delta = end.duration_since(start).unwrap();
+
+        println!("Inference took {}ms", delta.as_millis());
         
         // convert to vector
         let res: Vec<f32> = res.iter().cloned().collect();
