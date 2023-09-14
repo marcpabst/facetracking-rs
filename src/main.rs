@@ -12,13 +12,15 @@ use imageproc::drawing::draw_line_segment_mut;
 use imageproc::drawing::draw_cross_mut;
 use imageproc::drawing::draw_hollow_circle_mut;
 use imageproc::drawing::draw_text_mut;
-use imageproc::point::Point;
+use nalgebra::Point2;
 use ndarray_npy::ReadNpyExt;
 use std::io::Cursor;
 use rusttype::{Font, Scale};
 
 use nng::{Aio, AioResult, Context, Protocol, Socket};
 
+mod face; // import face.rs
+use face::*; // import everything from face.rs
 
 use nalgebra as na;
 
@@ -30,8 +32,70 @@ use ort::{
     LoggingLevel, SessionBuilder, Value,
 };
 
+fn get_rect_area([x1, y1, x2, y2]: [f32; 4]
+) -> f32 {
+    (x2 - x1) * (y2 - y1)
+}
+
+fn get_rects_distance_center(
+    [x01, y01, x02, y02]: [f32; 4],
+    [x11, y11, x12, y12]: [f32; 4],
+) -> f32 {
+    let x1 = (x02 + x01) / 2.0;
+    let y1 = (y02 + y01) / 2.0;
+    let x2 = (x12 + x11) / 2.0;
+    let y2 = (y12 + y11) / 2.0;
+    ((x2 - x1).powi(2) + (y2 - y1).powi(2)).sqrt()
+}
+
+fn adjust_facebox(
+    [x1, y1, x2, y2]: [f32; 4],
+    container_width: f32,
+    container_height: f32,
+) -> [f32; 4] {
+    // Calculate the width and height of the first rectangle
+    let width = x2 - x1;
+    let height = y2 - y1;
+
+    // Calculate the right and bottom edges of both rectangles
+    let rect_right = x2;
+    let rect_bottom = y2;
+    let container_right = container_width;
+    let container_bottom = container_height;
+
+    // Check if the first rectangle is fully within the second rectangle
+    let mut adjusted_x1 = x1;
+    let mut adjusted_y1 = y1;
+
+    if rect_right > container_right {
+        // Adjust x1 to fit within the container
+        adjusted_x1 -= rect_right - container_right;
+    }
+    if rect_bottom > container_bottom {
+        // Adjust y1 to fit within the container
+        adjusted_y1 -= rect_bottom - container_bottom;
+    }
+
+    // Calculate the adjusted x2 and y2 based on the adjusted x1 and y1
+    let adjusted_x2 = adjusted_x1 + width;
+    let adjusted_y2 = adjusted_y1 + height;
+
+    // Return the adjusted coordinates (x1, y1, x2, y2)
+    [adjusted_x1, adjusted_y1, adjusted_x2, adjusted_y2]
+}
+
 use ndarray::{Array, CowArray, Array3, Ix3};
-fn fit_circle((x1, y1): (f32, f32), (x2, y2): (f32, f32), (x3, y3): (f32, f32), (x4, y4): (f32, f32)) -> (f32, f32, f32) {
+fn fit_circle(points: &[Point2<f32>]) -> (Point2<f32>, f32) {
+
+    let x1 = points[0].x;
+    let y1 = points[0].y;
+    let x2 = points[1].x;
+    let y2 = points[1].y;
+    let x3 = points[2].x;
+    let y3 = points[2].y;
+    let x4 = points[3].x;
+    let y4 = points[3].y;
+
     // Calculate the coordinates of the barycenter (mean)
     let x_m = (x1 + x2 + x3 + x4) / 4.0;
     let y_m = (y1 + y2 + y3 + y4) / 4.0;
@@ -83,7 +147,8 @@ fn fit_circle((x1, y1): (f32, f32), (x2, y2): (f32, f32), (x3, y3): (f32, f32), 
     // Calculate the residual sum of squares
     let residu_1 = (ri1 - r_1).powi(2) + (ri2 - r_1).powi(2) + (ri3 - r_1).powi(2) + (ri4 - r_1).powi(2);
 
-    (xc_1, yc_1, r_1)
+    // return the center coordinates and the radius
+    (Point2::new(xc_1, yc_1), r_1)
 }
 
 
@@ -103,7 +168,7 @@ fn sigmoid(x: f32) -> f32 {
 
 fn draw_hollow_polygon_mut(
     canvas: &mut RgbImage,
-    polygon: &[Point<f32>],
+    polygon: &[Point2<f32>],
     color: Rgb<u8>,
 ) {
     // draw lines between all points
@@ -209,6 +274,7 @@ fn ngg_callback(aio: Aio, ctx: &Context, res: AioResult) {
 #[show_image::main]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
 
+    tracing_subscriber::fmt::init();
     
     let mut last_frame = std::time::Instant::now();
 
@@ -235,29 +301,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let blazeface_enviroment = Environment::builder()
         .with_name("BlazeFace")
         // use apple coreml backend
-        .with_execution_providers([ExecutionProvider::CUDA(Default::default())])
+        .with_execution_providers([ExecutionProvider::CoreML(Default::default())])
         .build()?
         .into_arc();
 
     let blazeface_model = include_bytes!("../face_detection_back_256x256_float32_opt.onnx");
 
     let blazeface_session = SessionBuilder::new(&blazeface_enviroment)?
-        .with_optimization_level(GraphOptimizationLevel::Level1)?
-        .with_intra_threads(1)?
+       // .with_optimization_level(GraphOptimizationLevel::Level1)?
+        .with_intra_threads(5)?
         .with_model_from_memory(blazeface_model)?;
 
     let eye_net_enviroment = Environment::builder()
         .with_name("EyeNet")
         // use apple coreml backend
-        .with_execution_providers([ExecutionProvider::CUDA(Default::default())])
+        .with_execution_providers([ExecutionProvider::CoreML(Default::default())])
         .build()?
         .into_arc();
 
     let eye_net_model = include_bytes!("../face_landmarks_detector.onnx");
 
     let eye_net_session = SessionBuilder::new(&eye_net_enviroment)?
-        .with_optimization_level(GraphOptimizationLevel::Level1)?
-        .with_intra_threads(1)?
+        .with_intra_threads(5)?
         .with_model_from_memory(eye_net_model)?;
 
     println!("Input tensor shape: {:?}", eye_net_session.inputs);
@@ -276,13 +341,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // select camera
-    let index = CameraIndex::Index(0);
+    let index = CameraIndex::Index(1);
 
 
-    let fps = 30;
+    let fps = 60;
     let fourcc = FrameFormat::MJPEG;
 
-    let resolution = Resolution::new(1280, 720);
+    let resolution = Resolution::new(1920, 1080);
     let camera_format = CameraFormat::new(resolution, fourcc, fps);
  
     let requested = RequestedFormat::new::<RgbFormat>(
@@ -311,7 +376,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // create buffer holding the last 100 pupil positions
     let mut pupil_positions: Vec<[f32; 2]> = vec![[0.0, 0.0]; 100];
 
-    let mode = "uvc";
+    let mode = "facetime_hd";
 
     // get the frame
     loop {
@@ -363,8 +428,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .to_image();
 
-        // if there is no valid face box, run blazeface
-        if !face_box_valid {
+    
+
+
+
     
             // resize to 256x256 for blazeface
             let proc_img = image::imageops::resize(&square_crop, 256, 256, image::imageops::FilterType::Nearest);
@@ -429,13 +496,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 265.0,
             );
 
-            // // print shape of boxes
-            // println!("Boxes shape: {:?}", boxes.shape());
-
-            // // print first box
-            // println!("First box x, y, w, h: {}, {}, {}, {}", boxes[[0, argmax, 1]], boxes[[0, argmax, 1]], boxes[[0, argmax, 3]], boxes[[0, argmax, 2]]);
-
-            // extract bounding box coordinates (add 0.25 margin)
+ 
+            // extract bounding box coordinates
             let x1 = boxes[[0, argmax, 1]] * min_side as f32;
             let y1 = boxes[[0, argmax, 0]] * min_side as f32;
             let x2 = boxes[[0, argmax, 3]] * min_side as f32;
@@ -444,12 +506,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let w = x2 - x1;
             let h = y2 - y1;
 
-            face_box = [x1 - w * 0.25, y1 - h * 0.25, x2 + w * 0.25, y2 + h * 0.25];
-       
+            let mut face_box_new = [x1 - w * 0.25, y1 - h * 0.25, x2 + w * 0.25, y2 + h * 0.25];
 
-            face_box_valid = true;
+            // adjust face box to fit inside image
+            face_box_new = adjust_facebox(
+                face_box_new,
+                square_crop.width() as f32,
+                square_crop.height() as f32,
+            );
 
-        }
+            // check if the differnce in area between the new and old face box is more than 10% of the old face box
+            // OR if the distance between the center of the new and old face box is more than 10% of the width of the old face box
+            // OR if the face box was marked as invalid
+            if (get_rect_area(face_box_new) - get_rect_area(face_box)).abs() > 0.15 * get_rect_area(face_box) {
+               // let's upfate the face box
+                println!("Updating face box because it was more than 10% different in area");
+                face_box = face_box_new;
+                face_box_valid = true;
+    } else if get_rects_distance_center(face_box_new, face_box) > 0.15 * (face_box[2] - face_box[0]) {
+                println!("Updating face box because it was more than 10% different in distance");
+                face_box = face_box_new;
+                face_box_valid = true;
+            } else if !face_box_valid {
+                // if the face box was invalid, let's update it
+                println!("Updating face box because it was flagged as invalid");
+                face_box = face_box_new;
+                face_box_valid = true;
+            } else  {
+                face_box_valid = true;
+            }
+
+        
+        // make sure that the face box is fully inside the image
+        face_box[0] = face_box[0].max(0.0);
+        face_box[1] = face_box[1].max(0.0);
 
         // crop to bounding box (for face landmark detection)
         let crop_face = image::imageops::crop_imm(
@@ -462,7 +552,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .to_image();
 
         // resize to 256x256 
-        let mut croped_face_img = image::imageops::resize(&crop_face, 256, 256, image::imageops::FilterType::Nearest);
+        let mut croped_face_img = image::imageops::resize(
+            &crop_face, 
+            256, 
+            256, 
+            image::imageops::FilterType::Nearest);
 
         // convert Luma to pseudo RGB
         let nvec: Vec<f32> = croped_face_img.clone()
@@ -470,9 +564,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter().flat_map(|p| vec![*p, *p, *p])
         .map(|p| (p as f32  / 255.0 - 0.5) / 2.0)
         .collect();
-
-     
-
         
         let array: CowArray<_, _> = Array::from_shape_vec(
             (1, 256, 256, 3),
@@ -489,8 +580,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let res: OrtOwnedTensor<f32, _> = outputs[0].try_extract()?;
         let res = res.view().deref().clone();
+        
         // convert to vector
         let res: Vec<f32> = res.iter().cloned().collect();
+
+        // convert to FaceLandmarks (make sure to divide by 256)
+        let face_landmarks = face::FaceLandmarks::from_vec(res.iter().map(|p| p / 256.0).collect());
 
         let conf: OrtOwnedTensor<f32, _> =  outputs[1].try_extract()?;
         let conf = conf.view().deref().clone();
@@ -510,131 +605,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let blue = image::Rgb([0u8, 0u8, 255u8]);
         let white = image::Rgb([255u8, 255u8, 255u8]);
 
-        // pupil center positions
-        let pupil_center_idx1 =  [478 - 10]; 
-        let pupil_center_idx2 =  [478 - 5];
-
-        // pupil edge positions
-        let pupil_edge_idx1 = [478 - 9, 478 - 8, 478 - 7, 478 - 6]; 
-        let pupil_edge_idx2 = [478 - 4, 478 - 3, 478 - 2, 478 - 1];
-
-        // eye corner positions
-        let eye_corner_idx1 = [
-            33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246, 33
-        ];
-
-        let eye_corner_idx2 = [
-            362, 382, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381, 362
-        ];
-
-
         // create dictionary of keypoints
 
-        fn get_landmark(index: i32, vector: &Vec<f32>) -> (f32, f32) {
-            let x = vector[index as usize * 3 + 0] / 256.0;
-            let y = vector[index as usize * 3 + 1] / 256.0;
-            (x, y)
-        }
-
-        fn to_image_coords(p:(f32, f32), face_box: [f32; 4]) -> (f32, f32) {
-            let x = p.0 * (face_box[2] - face_box[0]) + face_box[0];
-            let y = p.1 * (face_box[3] - face_box[1]) + face_box[1];
-            (x, y)
+        fn to_image_coords(p:Point2<f32>, face_box: [f32; 4]) -> Point2<f32> {
+            let x = p.x * (face_box[2] - face_box[0]) + face_box[0];
+            let y = p.y * (face_box[3] - face_box[1]) + face_box[1];
+            Point2::new(x, y)
         }
 
         // iterate over results and draw keypoints (478 in total)
-        for i in 0..478 {
-            let l = get_landmark(i, &res);
-        
-            // transform to original image coordinates
-            //let x = x * (face_box[2] - face_box[0]) + face_box[0];
-            //let y = y * (face_box[3] - face_box[1]) + face_box[1];
+        for p in face_landmarks.points.iter() {
+            let p = to_image_coords(p.xy(), face_box);
+            draw_cross_mut(&mut image_to_show, black, p.x as i32, p.y as i32);
 
-            let x = to_image_coords(l, face_box).0;
-            let y = to_image_coords(l, face_box).1;
-
-            draw_cross_mut(&mut image_to_show, black, x as i32, y as i32);
-
-            if pupil_edge_idx1.contains(&i) || pupil_edge_idx2.contains(&i) {
-                draw_cross_mut(&mut image_to_show, green, x as i32, y as i32);
-            }
-
-            if eye_corner_idx1.contains(&i) {
-                draw_cross_mut(&mut image_to_show, red, x as i32, y as i32);
-            }
-
-            // }
         }
-
 
         // draw face box
         draw_hollow_rect_mut(
             &mut image_to_show,
             Rect::at(face_box[0] as i32, face_box[1] as i32)
                 .of_size((face_box[2] - face_box[0]) as u32, (face_box[3] - face_box[1]) as u32),
-            red,
+            blue,
         );
 
-        // plot eye corners
-        let eye_corner_ps = eye_corner_idx1.iter().map(|&i| to_image_coords(get_landmark(i, &res), face_box)).collect::<Vec<(f32, f32)>>();
-        // convert to vector of Point<f32>
-        let eye_corner_ps = eye_corner_ps.iter().map(|&p| Point::new(p.0 as f32, p.1 as f32)).collect::<Vec<Point<f32>>>();
-
-        // draw eye corners for eye 1
-        draw_hollow_polygon_mut(&mut image_to_show, &eye_corner_ps, red);
+        // draw eye corners as vector as 2d points
+        let left_eye_corners = face_landmarks.get_mesh(LandmarkMesh::LeftEye).iter().map(|p| to_image_coords(p.xy(), face_box)).collect::<Vec<_>>();
+        let right_eye_corners = face_landmarks.get_mesh(LandmarkMesh::RightEye).iter().map(|p| to_image_coords(p.xy(), face_box)).collect::<Vec<_>>();
+        let left_pupil_corners = face_landmarks.get_mesh(LandmarkMesh::LeftPupil).iter().map(|p| to_image_coords(p.xy(), face_box)).collect::<Vec<_>>();
+        let right_pupil_corners = face_landmarks.get_mesh(LandmarkMesh::RightPupil).iter().map(|p| to_image_coords(p.xy(), face_box)).collect::<Vec<_>>();
         
-        // draw pupil circle for eye 1
-        let pupil_circle1 = fit_circle(
-            to_image_coords(get_landmark(pupil_edge_idx1[0], &res), face_box),
-            to_image_coords(get_landmark(pupil_edge_idx1[1], &res), face_box),
-            to_image_coords(get_landmark(pupil_edge_idx1[2], &res), face_box),
-            to_image_coords(get_landmark(pupil_edge_idx1[3], &res), face_box),
-        );
+        draw_hollow_polygon_mut(&mut image_to_show,left_eye_corners.as_slice(),red);
+        draw_hollow_polygon_mut(&mut image_to_show,right_eye_corners.as_slice(),red);
+        let (left_pupil_center, left_pupil_radius) = fit_circle(left_pupil_corners.as_slice());
+        draw_hollow_circle_mut(&mut image_to_show, (left_pupil_center.x as i32, left_pupil_center.y as i32), left_pupil_radius as i32, green);
+        let (right_pupil_center, right_pupil_radius) = fit_circle(right_pupil_corners.as_slice());
+        draw_hollow_circle_mut(&mut image_to_show, (right_pupil_center.x as i32, right_pupil_center.y as i32), right_pupil_radius as i32, green);
 
-        draw_hollow_circle_mut(
-            &mut image_to_show,
-            (pupil_circle1.0 as i32, pupil_circle1.1 as i32),
-            pupil_circle1.2 as i32,
-            green
-        );
+        // draw pupil centers
+        let left_pupil_center = to_image_coords(face_landmarks.get_point(LandmarkPoint::LeftPupil).xy(), face_box);
+        draw_cross_mut(&mut image_to_show, green, left_pupil_center.x as i32, left_pupil_center.y as i32);
+        let right_pupil_center = to_image_coords(face_landmarks.get_point(LandmarkPoint::RightPupil).xy(), face_box);
+        draw_cross_mut(&mut image_to_show, green, right_pupil_center.x as i32, right_pupil_center.y as i32);
 
-        // draw eye corners for eye 2
-        let eye_corner_ps2 = eye_corner_idx2.iter().map(|&i| to_image_coords(get_landmark(i, &res), face_box)).collect::<Vec<(f32, f32)>>();
+    
+        // plot fps (1s divided by average frame delta) (if there are less than 5 frames, fps is 0)
+        let fps = if frame_deltas.len() < 5 {
+            0.0
+        } else {
+            1.0 / (frame_deltas[2..].iter().sum::<std::time::Duration>().as_secs_f32() / frame_deltas.len() as f32)
+        };
 
-        // convert to vector of Point<f32>
-        let eye_corner_ps2 = eye_corner_ps2.iter().map(|&p| Point::new(p.0 as f32, p.1 as f32)).collect::<Vec<Point<f32>>>();
-
-        draw_hollow_polygon_mut(&mut image_to_show, &eye_corner_ps2, red);
-
-        // draw pupil circle for eye 2
-        let pupil_circle2 = fit_circle(
-            to_image_coords(get_landmark(pupil_edge_idx2[0], &res), face_box),
-            to_image_coords(get_landmark(pupil_edge_idx2[1], &res), face_box),
-            to_image_coords(get_landmark(pupil_edge_idx2[2], &res), face_box),
-            to_image_coords(get_landmark(pupil_edge_idx2[3], &res), face_box),
-        );
-
-        draw_hollow_circle_mut(
-            &mut image_to_show,
-            (pupil_circle2.0 as i32, pupil_circle2.1 as i32),
-            pupil_circle2.2 as i32,
-            green
-        );
-
-        // draw pupil center for eye 1
-        draw_cross_mut(&mut image_to_show, green, 
-            to_image_coords(get_landmark(pupil_center_idx1[0], &res), face_box).0 as i32,
-            to_image_coords(get_landmark(pupil_center_idx1[0], &res), face_box).1 as i32,
-        );
-        
-        // draw pupil center for eye 2
-        draw_cross_mut(&mut image_to_show, green, 
-            to_image_coords(get_landmark(pupil_center_idx2[0], &res), face_box).0 as i32,
-            to_image_coords(get_landmark(pupil_center_idx2[0], &res), face_box).1 as i32,
-        );
-
-        // plot fps (1s divided by average frame delta)
-        let fps = 1.0 / (frame_deltas.iter().sum::<std::time::Duration>().as_secs_f32() / frame_deltas.len() as f32);
         draw_text_mut(
             &mut image_to_show,
             white,
