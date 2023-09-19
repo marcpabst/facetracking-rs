@@ -344,14 +344,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let index = CameraIndex::Index(0);
 
 
-    let fps = 60;
-    let fourcc = FrameFormat::MJPEG;
+    let fps = 120;
+    let fourcc = FrameFormat::GRAY;
 
     let resolution = Resolution::new(1280, 720);
     let camera_format = CameraFormat::new(resolution, fourcc, fps);
  
     let requested = RequestedFormat::new::<RgbFormat>(
-        RequestedFormatType::Exact(camera_format),
+        RequestedFormatType::HighestResolution(resolution),
     );
 
     println!("Opening camera {} with format {:?}", index, requested);
@@ -380,15 +380,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // get the frame
     loop {
+
+        let mut start = SystemTime::now();
        
        let mut greyscale_img: ImageBuffer<Luma<u8>, Vec<u8>>;
 
         if mode == "facetime_hd"
         {
             let frame: std::borrow::Cow<'_, [u8]> = camera.frame_raw().unwrap();
+            
 
             // get raw image as vector
             let data = frame.to_vec();
+
+            start = SystemTime::now();
 
             // convert the broken NV12 format to grayscale (hint: its not nv12)
             let greyscale_vec: Vec<u8> =
@@ -428,10 +433,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .to_image();
 
-    
-
-
-
+        if !face_box_valid {
     
             // resize to 256x256 for blazeface
             let proc_img = image::imageops::resize(&square_crop, 256, 256, image::imageops::FilterType::Nearest);
@@ -450,11 +452,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap()
             .into_dyn()
             .into();
+
             let inputs = vec![Value::from_array(blazeface_session.allocator(), &array)?];
 
-            // run inference
-
             let outputs: Vec<Value> = blazeface_session.run(inputs)?;
+           
 
             let results01: OrtOwnedTensor<f32, _> = outputs[0].try_extract()?;
             let results01 = results01.view().deref().clone();
@@ -541,6 +543,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         face_box[0] = face_box[0].max(0.0);
         face_box[1] = face_box[1].max(0.0);
 
+        }
+
         // crop to bounding box (for face landmark detection)
         let crop_face = image::imageops::crop_imm(
             &square_crop,
@@ -573,7 +577,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into_dyn()
         .into();
 
-        let start = SystemTime::now();
+        
         let inputs = vec![Value::from_array(eye_net_session.allocator(), &array)?];
 
         // run inference
@@ -583,10 +587,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let res: OrtOwnedTensor<f32, _> = outputs[0].try_extract()?;
         let res = res.view().deref().clone();
 
-        let end = SystemTime::now();
-        let delta = end.duration_since(start).unwrap();
-
-        println!("Inference took {}ms", delta.as_millis());
         
         // convert to vector
         let res: Vec<f32> = res.iter().cloned().collect();
@@ -654,6 +654,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let right_pupil_center = to_image_coords(face_landmarks.get_point(LandmarkPoint::RightPupil).xy(), face_box);
         draw_cross_mut(&mut image_to_show, green, right_pupil_center.x as i32, right_pupil_center.y as i32);
 
+        // draw pupil corners in green
+        for p in left_pupil_corners.iter() {
+            draw_cross_mut(&mut image_to_show, green, p.x as i32, p.y as i32);
+        }
+        for p in right_pupil_corners.iter() {
+            draw_cross_mut(&mut image_to_show, green, p.x as i32, p.y as i32);
+        }
     
         // plot fps (1s divided by average frame delta) (if there are less than 5 frames, fps is 0)
         let fps = if frame_deltas.len() < 5 {
@@ -703,6 +710,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             greyscale_img.save(filename).unwrap();
 
         }
+
+        let end = SystemTime::now();
+
+        // get inference time
+        let inference_time = end.duration_since(start).unwrap();
+        println!("Frame processed in {}ms", inference_time.as_millis());
     }
 
     // return
