@@ -104,6 +104,7 @@ pub struct State {
     pub fps: f32,
     pub image: DynamicImage,
     pub devices: Vec<String>,
+    pub current_device: u32,
     pub is_recording: bool,
     pub recording_path: String,
 }
@@ -111,6 +112,7 @@ pub struct State {
 // function that runs as a thread and performs the actual work
 // function should accept a shared state as an argument
 fn worker_thread(shared_state: Arc<Mutex<State>>) {
+    loop { 
     // get backend
     let backend = native_api_backend().unwrap();
 
@@ -124,10 +126,12 @@ fn worker_thread(shared_state: Arc<Mutex<State>>) {
     // set the shared state devices
     let mut guard = shared_state.lock().unwrap();
     guard.devices = devices.iter().map(|d| d.human_name()).collect();
-    std::mem::drop(guard);
+    
 
     // select camera
-    let index_i = 0;
+    let index_i = guard.current_device.clone() as u32;
+
+    std::mem::drop(guard);
     let index = CameraIndex::Index(index_i);
 
     let fps = 60;
@@ -245,8 +249,18 @@ fn worker_thread(shared_state: Arc<Mutex<State>>) {
         guard.fps = (fps_vec.iter().sum::<f32>() / fps_vec.len() as f32).round();
         std::mem::drop(guard);
 
+        // check if the current device has changed
+        let mut guard = shared_state.lock().unwrap();
+        if guard.current_device != index_i {
+            // break out of the loop
+            println!("Device changed from {} to {}", guard.current_device, index_i);
+            break;
+        }
+        std::mem::drop(guard);
+
         last_frame_time = SystemTime::now();
     }
+}
 }
 
 
@@ -263,6 +277,7 @@ fn main() -> eframe::Result<()> {
         fps: 0.0,
         image: DynamicImage::ImageRgb8(ImageBuffer::from_vec(1280, 720, vec).unwrap()),
         devices: Vec::new(),
+        current_device: 0,
         is_recording: false,
         recording_path: String::new(),
     }));
@@ -348,15 +363,20 @@ impl eframe::App for TemplateApp {
             let devices = &guard.devices.clone();
             std::mem::drop(guard);
 
-            let mut selected_device = 0;
+            let mut selected_device = shared_state.lock().unwrap().current_device.clone() as usize;
 
             egui::ComboBox::from_label("Capture device")
                 .selected_text(format!("{:?}", devices[selected_device]))
                 .show_ui(ui, |ui| {
                     for (i, device) in devices.iter().enumerate() {
-                        ui.selectable_value(&mut selected_device, i, device);
+                        ui.selectable_value(&mut selected_device, i as usize, device);
                     }
             });
+
+            // set mutex
+            let mut guard = shared_state.lock().unwrap(); 
+            guard.current_device = selected_device as u32;
+            std::mem::drop(guard);
         
          
             ui.add(egui::Slider::new(saturation, 0.0..=10.0).text("Saturation"));
