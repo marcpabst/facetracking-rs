@@ -1,264 +1,147 @@
+#![feature(portable_simd)]
+extern crate rust_eyetracking;
+
+use std::simd::SimdFloat;
+use std::simd::f32x4;
+use nokhwa::pixel_format::LumaFormat;
+use rayon::prelude::*;
+
+use dcv_color_primitives as dcp;
+use dcp::ColorSpace;
+use dcp::ImageFormat;
+use dcp::PixelFormat;
+use dcp::convert_image;
+use egui::plot::{Line, Plot, PlotPoints};
+use egui_gizmo::Gizmo;
+use egui_gizmo::GizmoMode;
+use image::{DynamicImage, ImageBuffer, Luma};
+use imageproc::drawing::draw_cross_mut;
+use imageproc::drawing::draw_hollow_rect_mut;
+use nalgebra as na;
+use nokhwa::pixel_format::RgbAFormat;
+use nokhwa::Buffer;
+use nokhwa::CallbackCamera;
 use nokhwa::{
     native_api_backend,
-    pixel_format::{self, RgbFormat},
+    pixel_format::RgbFormat,
     query,
-    utils::{CameraIndex, RequestedFormat, RequestedFormatType, Resolution, CameraFormat, FrameFormat},
-    Camera, camera_traits,
+    utils::{
+        CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType, Resolution,
+    },
+    Camera,
 };
-use show_image::{create_window, ImageInfo, ImageView};
-use image::{*, buffer::ConvertBuffer};
-use imageproc::{rect::Rect, drawing::draw_hollow_rect_mut, definitions::Image};
-use imageproc::drawing::draw_line_segment_mut;
-use imageproc::drawing::draw_cross_mut;
-use imageproc::drawing::draw_hollow_circle_mut;
-use imageproc::drawing::draw_text_mut;
-use nalgebra::Point2;
-use ndarray_npy::ReadNpyExt;
-use std::time::SystemTime;
-use std::io::Cursor;
-use rusttype::{Font, Scale};
+use re_ui::ReUi;
+
+use rust_eyetracking::face_detection::model_blazeface::BlazefaceModel;
+use rust_eyetracking::face_detection::FaceBoundingBox;
+use rust_eyetracking::face_detection::FaceDetectionModel;
+
+use rust_eyetracking::face_landmarks::model_mediapipe::MediapipeFaceLandmarksModel;
+use rust_eyetracking::face_landmarks::FaceLandmarksModel;
+use rust_eyetracking::face_landmarks::ScreenFaceLandmarks;
+use show_image::AsImageView;
+
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
+
+use std::collections::VecDeque;
+
+pub struct TimeSeries {
+    data: VecDeque<f32>,
+    timestamp: VecDeque<u128>,
+    max_length: usize,
+}
+
+impl TimeSeries {
+    fn new(max_length: usize) -> Self {
+        Self {
+            data: VecDeque::new(),
+            timestamp: VecDeque::new(),
+            max_length,
+        }
+    }
+
+    fn push(&mut self, value: f32, timestamp: u128) {
+        self.data.push_back(value);
+        self.timestamp.push_back(timestamp);
+
+        if self.data.len() > self.max_length {
+            self.data.pop_front();
+            self.timestamp.pop_front();
+        }
+    }
+
+    fn get_mean(&self) -> f32 {
+        self.data.iter().sum::<f32>() / self.data.len() as f32
+    }
+}
+
+// implement clone for TimeSeries
+impl Clone for TimeSeries {
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+            timestamp: self.timestamp.clone(),
+            max_length: self.max_length,
+        }
+    }
+}
 
 use nng::{Aio, AioResult, Context, Protocol, Socket};
 
+const ADDRESS: &'static str = "tcp://127.0.0.1:54321";
 
-mod face; // import face.rs
-use face::*; // import everything from face.rs
+fn server(shared_state: SharedState) -> Result<(), nng::Error> {
+    // check if there is a shared state
 
-use nalgebra as na;
+    // Set up the server and listen for connections on the specified address.
+    let s = Socket::new(Protocol::Rep0)?;
 
-use std::ops::Deref;
+    // Set up the callback that will be called when the server receives a message
+    // from the client.
+    let ctx = Context::new(&s)?;
+    let ctx_clone = ctx.clone();
+    let aio =
+        Aio::new(move |aio, res| worker_callback(aio, &ctx_clone, res, shared_state.clone()))?;
 
-use ndarray::s;
-use ort::{
-    environment::Environment, tensor::OrtOwnedTensor, ExecutionProvider, GraphOptimizationLevel,
-    LoggingLevel, SessionBuilder, Value,
-};
+    s.listen(ADDRESS)?;
 
-fn get_rect_area([x1, y1, x2, y2]: [f32; 4]
-) -> f32 {
-    (x2 - x1) * (y2 - y1)
-}
+    // start the worker thread
+    // subscribe to messages
 
-fn get_rects_distance_center(
-    [x01, y01, x02, y02]: [f32; 4],
-    [x11, y11, x12, y12]: [f32; 4],
-) -> f32 {
-    let x1 = (x02 + x01) / 2.0;
-    let y1 = (y02 + y01) / 2.0;
-    let x2 = (x12 + x11) / 2.0;
-    let y2 = (y12 + y11) / 2.0;
-    ((x2 - x1).powi(2) + (y2 - y1).powi(2)).sqrt()
-}
+    ctx.recv(&aio)?;
 
-fn adjust_facebox(
-    [x1, y1, x2, y2]: [f32; 4],
-    container_width: f32,
-    container_height: f32,
-) -> [f32; 4] {
-    // Calculate the width and height of the first rectangle
-    let width = x2 - x1;
-    let height = y2 - y1;
+    println!("Server listening on {}", ADDRESS);
 
-    // Calculate the right and bottom edges of both rectangles
-    let rect_right = x2;
-    let rect_bottom = y2;
-    let container_right = container_width;
-    let container_bottom = container_height;
-
-    // Check if the first rectangle is fully within the second rectangle
-    let mut adjusted_x1 = x1;
-    let mut adjusted_y1 = y1;
-
-    if rect_right > container_right {
-        // Adjust x1 to fit within the container
-        adjusted_x1 -= rect_right - container_right;
-    }
-    if rect_bottom > container_bottom {
-        // Adjust y1 to fit within the container
-        adjusted_y1 -= rect_bottom - container_bottom;
-    }
-
-    // Calculate the adjusted x2 and y2 based on the adjusted x1 and y1
-    let adjusted_x2 = adjusted_x1 + width;
-    let adjusted_y2 = adjusted_y1 + height;
-
-    // Return the adjusted coordinates (x1, y1, x2, y2)
-    [adjusted_x1, adjusted_y1, adjusted_x2, adjusted_y2]
-}
-
-use ndarray::{Array, CowArray, Array3, Ix3};
-fn fit_circle(points: &[Point2<f32>]) -> (Point2<f32>, f32) {
-
-    let x1 = points[0].x;
-    let y1 = points[0].y;
-    let x2 = points[1].x;
-    let y2 = points[1].y;
-    let x3 = points[2].x;
-    let y3 = points[2].y;
-    let x4 = points[3].x;
-    let y4 = points[3].y;
-
-    // Calculate the coordinates of the barycenter (mean)
-    let x_m = (x1 + x2 + x3 + x4) / 4.0;
-    let y_m = (y1 + y2 + y3 + y4) / 4.0;
-
-    // Calculate the reduced coordinates
-    let u1 = x1 - x_m;
-    let u2 = x2 - x_m;
-    let u3 = x3 - x_m;
-    let u4 = x4 - x_m;
-    let v1 = y1 - y_m;
-    let v2 = y2 - y_m;
-    let v3 = y3 - y_m;
-    let v4 = y4 - y_m;
-
-    // Calculate the sums needed for the linear system
-    let suv = u1 * v1 + u2 * v2 + u3 * v3 + u4 * v4;
-    let suu = u1 * u1 + u2 * u2 + u3 * u3 + u4 * u4;
-    let svv = v1 * v1 + v2 * v2 + v3 * v3 + v4 * v4;
-    let suuv = u1 * u1 * v1 + u2 * u2 * v2 + u3 * u3 * v3 + u4 * u4 * v4;
-    let suvv = u1 * v1 * v1 + u2 * v2 * v2 + u3 * v3 * v3 + u4 * v4 * v4;
-    let suuu = u1 * u1 * u1 + u2 * u2 * u2 + u3 * u3 * u3 + u4 * u4 * u4;
-    let svvv = v1 * v1 * v1 + v2 * v2 * v2 + v3 * v3 * v3 + v4 * v4 * v4;
-
-    // Solve the linear system
-    let a = suu;
-    let b = suv;
-    let c = suv;
-    let d = svv;
-    let e = 0.5 * (suuu + suvv);
-    let f = 0.5 * (svvv + suuv);
-
-    // Calculate the center coordinates in reduced coordinates
-    let uc = (d * e - b * f) / (a * d - b * c);
-    let vc = (a * f - c * e) / (a * d - b * c);
-
-    // Calculate the center coordinates in original coordinates
-    let xc_1 = x_m + uc;
-    let yc_1 = y_m + vc;
-
-    // Calculate the radii of each point to the center
-    let ri1 = ((x1 - xc_1).powi(2) + (y1 - yc_1).powi(2)).sqrt();
-    let ri2 = ((x2 - xc_1).powi(2) + (y2 - yc_1).powi(2)).sqrt();
-    let ri3 = ((x3 - xc_1).powi(2) + (y3 - yc_1).powi(2)).sqrt();
-    let ri4 = ((x4 - xc_1).powi(2) + (y4 - yc_1).powi(2)).sqrt();
-
-    // Calculate the mean radius
-    let r_1 = (ri1 + ri2 + ri3 + ri4) / 4.0;
-
-    // Calculate the residual sum of squares
-    let residu_1 = (ri1 - r_1).powi(2) + (ri2 - r_1).powi(2) + (ri3 - r_1).powi(2) + (ri4 - r_1).powi(2);
-
-    // return the center coordinates and the radius
-    (Point2::new(xc_1, yc_1), r_1)
-}
-
-
-
-fn convert_lum_image_buffer_to_rgb(image_buffer: ImageBuffer<Luma<u8>, Vec<u8>>) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
-    let mut rgb_image_buffer = ImageBuffer::new(image_buffer.width(), image_buffer.height());
-    for (x, y, pixel) in rgb_image_buffer.enumerate_pixels_mut() {
-        let luma_pixel = image_buffer.get_pixel(x, y);
-        *pixel = image::Rgb([luma_pixel[0], luma_pixel[0], luma_pixel[0]]);
-    }
-    rgb_image_buffer
-}
-
-fn sigmoid(x: f32) -> f32 {
-    1.0 / (1.0 + (-x).exp())
-}
-
-fn draw_hollow_polygon_mut(
-    canvas: &mut RgbImage,
-    polygon: &[Point2<f32>],
-    color: Rgb<u8>,
-) {
-    // draw lines between all points
-    for i in 0..polygon.len() - 1 {
-        draw_line_segment_mut(canvas, (polygon[i].x, polygon[i].y), (polygon[i + 1].x, polygon[i + 1].y), color);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
-
-fn argmax(input: Vec<f32>) -> usize {
-    let mut max = 0.0;
-    let mut max_index = 0;
-    for (i, &item) in input.iter().enumerate() {
-        if item > max {
-            max = item;
-            max_index = i;
-        }
-    }
-    max_index
-}
-
-use ndarray::{Array2, Axis};
-
-fn decode_boxes(
-    raw_boxes: &Array3<f32>,
-    anchors: &Array2<f32>,
-    x_scale: f32,
-    y_scale: f32,
-    w_scale: f32,
-    h_scale: f32,
-) -> Array3<f32> {
-    let shape = raw_boxes.shape();
-    let num_boxes = shape[1];
-
-    let mut boxes = Array3::zeros(Ix3(shape[0], shape[1], shape[2]));
-
-    for i in 0..num_boxes {
-        let x_center =
-            &raw_boxes[[0, i, 0]] / x_scale * &anchors[[i, 2]] + &anchors[[i, 0]];
-        let y_center =
-            &raw_boxes[[0, i, 1]] / y_scale * &anchors[[i, 3]] + &anchors[[i, 1]];
-
-        let w = &raw_boxes[[0, i, 2]] / w_scale * &anchors[[i, 2]];
-        let h = &raw_boxes[[0, i, 3]] / h_scale * &anchors[[i, 3]];
-
-        boxes[[0, i, 0]] = y_center - h / 2.0; // ymin
-        boxes[[0, i, 1]] = x_center - w / 2.0; // xmin
-        boxes[[0, i, 2]] = y_center + h / 2.0; // ymax
-        boxes[[0, i, 3]] = x_center + w / 2.0; // xmax
-
-        for k in 0..6 {
-            let offset = 4 + k * 2;
-            let keypoint_x =
-                &raw_boxes[[0, i, offset]] / x_scale * &anchors[[i, 2]] + &anchors[[i, 0]];
-            let keypoint_y =
-                &raw_boxes[[0, i, offset + 1]] / y_scale * &anchors[[i, 3]] + &anchors[[i, 1]];
-
-            boxes[[0, i, offset]] = keypoint_x;
-            boxes[[0, i, offset + 1]] = keypoint_y;
-        }
-    }
-
-    boxes
-}
-
-
-
-fn convert_nv12_to_grayscale(src_data: &[u8], width: u32, height: u32) -> Vec<u8> {
-    let src_data_new = {
-        // step through src_data and take every 2nd element, starting at 1
-        // create new vec with given size
-        let mut src_data_new = vec![0u8; (src_data.len() / 2) as usize];
-        for i in (1..src_data.len()).step_by(2) {
-            src_data_new[i / 2] = src_data[i];
-        }
-        src_data_new
-    };
-
-    src_data_new
-}
-
-fn ngg_callback(aio: Aio, ctx: &Context, res: AioResult) {
-    // This is the callback that will be called when we receive a message
+fn worker_callback(aio: Aio, ctx: &Context, res: AioResult, shared_state: SharedState) {
+    // This is the callback that will be called when the worker receives a message
+    // from the client. This fnction just prints the message.
     match res {
-         // We successfully received a message.
-         AioResult::Recv(m) => {
+        // We successfully received a message.
+        AioResult::Recv(m) => {
             let msg = m.unwrap();
-            println!("Worker received: {}", String::from_utf8_lossy(&msg[..]));
+
+            println!("Worker received message");
+
+            // if message is "record PATH" start recording
+            let msg_str = std::str::from_utf8(&msg).unwrap();
+            if msg_str.starts_with("record") {
+                let path = msg_str.split(" ").collect::<Vec<&str>>()[1];
+                let mut guard = shared_state.lock().unwrap();
+                guard.is_recording = Some(true);
+                guard.recording_path = Some(path.to_string());
+                std::mem::drop(guard);
+            } else if msg_str.starts_with("stop") {
+                let mut guard = shared_state.lock().unwrap();
+                guard.is_recording = Some(false);
+                std::mem::drop(guard);
+            }
+
             ctx.recv(&aio).unwrap();
         }
         // We successfully sent a message.
@@ -268,456 +151,751 @@ fn ngg_callback(aio: Aio, ctx: &Context, res: AioResult) {
         // We are sleeping.
         AioResult::Sleep(r) => {
             println!("Worker sleeping");
-        } 
-
+        }
     }
 }
 
-#[show_image::main]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    
-    let mut last_frame = std::time::Instant::now();
+// #![warn(clippy::all, rust_2018_idioms)]
+// #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-    // where to store the frames
-    let mut frame_path = r"D:\frames";
-    let mut is_recording = false;
+fn convert_nv12_to_grayscale(src_data: &[u8], width: u32, height: u32) -> Vec<u8> {
+    // let src_data_new = {
+    //     // step through src_data and take every 2nd element, starting at 1
+    //     // create new vec with given size
+    //     let mut src_data_new = vec![0u8; (src_data.len() / 2) as usize];
+    //     for i in (1..src_data.len()).step_by(2) {
+    //         src_data_new[i / 2] = src_data[i];
+    //     }
+    //     src_data_new
+    // };
 
-    // create ringbuffer for frame deltas
-    let mut frame_deltas: Vec<std::time::Duration> = vec![std::time::Duration::from_millis(0); 1];
+  
 
-    // load a font for drawing text (use system default)
-    let font: &[u8] = include_bytes!("../Roboto-Regular.ttf");
-    let font = Font::try_from_bytes(font).unwrap();
+    let mut dst_data = vec![255u8; (width * height * 3) as usize];
 
-
-    // read anchors from file anc.npy
-    let anchors_bytes = include_bytes!("../anc2.npy");
-    // Create fake "file"
-    let mut c = Cursor::new(anchors_bytes);
-    //let anchors: Array2<f32> = read_npy("./anc2.npy")?;
-    let anchors: Array2<f32> = ReadNpyExt::read_npy(c)?;
-
-
-    let blazeface_enviroment = Environment::builder()
-        .with_name("BlazeFace")
-        // use apple coreml backend
-        .with_execution_providers([ExecutionProvider::CoreML(Default::default())])
-        .build()?
-        .into_arc();
-
-    let blazeface_model = include_bytes!("../face_detection_back_256x256_float32_opt.onnx");
-
-    let blazeface_session = SessionBuilder::new(&blazeface_enviroment)?
-       // .with_optimization_level(GraphOptimizationLevel::Level1)?
-        .with_intra_threads(5)?
-        .with_model_from_memory(blazeface_model)?;
-
-    // let eye_net_enviroment = Environment::builder()
-    //     .with_name("EyeNet")
-    //     // use apple coreml backend
-    //     .with_execution_providers([ExecutionProvider::CoreML(Default::default())])
-    //     .build()?
-    //     .into_arc();
-
-    let eye_net_model = include_bytes!("../face_landmarks_detector.onnx");
-
-    let eye_net_session = SessionBuilder::new(&blazeface_enviroment)?
-        .with_intra_threads(5)?
-        .with_model_from_memory(eye_net_model)?;
-
-    println!("Input tensor shape: {:?}", eye_net_session.inputs);
-
-    // get backend
-    let backend = native_api_backend().unwrap();
-
-    // print backend info
-    println!("Backend: {}", backend);
-
-    let backend = native_api_backend().unwrap();
-    let devices = query(backend).unwrap();
-    println!("There are {} available cameras.", devices.len());
-    for device in devices {
-        println!("{device}", device = device);
-    }
-
-    // select camera
-    let index = CameraIndex::Index(0);
-
-
-    let fps = 120;
-    let fourcc = FrameFormat::GRAY;
-
-    let resolution = Resolution::new(1280, 720);
-    let camera_format = CameraFormat::new(resolution, fourcc, fps);
- 
-    let requested = RequestedFormat::new::<RgbFormat>(
-        RequestedFormatType::HighestResolution(resolution),
+    yuv422_to_rgb24(
+        &src_data,
+        &mut dst_data,
     );
 
-    println!("Opening camera {} with format {:?}", index, requested);
+    dst_data
 
-    // make the camera
-    let mut camera = Camera::new(index, requested).unwrap();
+}
 
-    // get resolution
-    let resolution = camera.resolution();
-    println!("Resolution: {}", resolution);
+// make State an alias for a Mutex protected struct
+type SharedState = Arc<Mutex<State>>;
 
-    // create a window
-    let window = create_window("image", Default::default())?;
+pub struct State {
+    // the data that will be shared between the threads
+    pub fps: Option<f32>,
+    pub fps_vec: Vec<f32>,
+    pub last_frame_time: Option<SystemTime>,
+    pub resolution: Option<(u32, u32)>,
+    pub image_valid: Option<bool>,
+    pub image: Option<DynamicImage>,
+    pub devices: Option<Vec<String>>,
+    pub current_device: Option<u32>,
+    pub is_recording: Option<bool>,
+    pub recording_path: Option<String>,
 
-    // open the camera
-    camera.open_stream();
-    println!("Opened camera");
+    pub face_bbox: Option<(u32, u32, u32, u32)>,
+    pub screen_face_landmarks: Option<Arc<dyn ScreenFaceLandmarks>>,
 
-    let mut face_box_valid = false;
-    let mut face_box: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
+    // time series
+    pub left_eye_dist_ts: Option<TimeSeries>,
+    pub right_eye_dist_ts: Option<TimeSeries>,
+    pub left_iris_x_ts: Option<TimeSeries>,
+    pub left_iris_y_ts: Option<TimeSeries>,
+}
 
-    // create buffer holding the last 100 pupil positions
-    let mut pupil_positions: Vec<[f32; 2]> = vec![[0.0, 0.0]; 100];
+// by default, all fields are None
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            fps: None,
+            fps_vec: Vec::new(),
+            last_frame_time: None,
+            resolution: None,
+            image_valid: None,
+            image: None,
+            devices: None,
+            current_device: None,
+            is_recording: None,
+            recording_path: None,
 
-    let mode = "facetime_hd";
+            face_bbox: None,
+            screen_face_landmarks: None,
 
-    // get the frame
-    loop {
-
-        let mut start = SystemTime::now();
-       
-       let mut greyscale_img: ImageBuffer<Luma<u8>, Vec<u8>>;
-
-        if mode == "facetime_hd"
-        {
-            let frame: std::borrow::Cow<'_, [u8]> = camera.frame_raw().unwrap();
-            
-
-            // get raw image as vector
-            let data = frame.to_vec();
-
-            start = SystemTime::now();
-
-            // convert the broken NV12 format to grayscale (hint: its not nv12)
-            let greyscale_vec: Vec<u8> =
-                convert_nv12_to_grayscale(&data, resolution.width_x, resolution.height_y);
-
-            // create greyscale imagebuffer
-            greyscale_img = ImageBuffer::from_vec(
-                resolution.width_x,
-                resolution.height_y,
-                Clone::clone(&greyscale_vec),            
-            )
-            .unwrap();
-        } else {
-            let frame = camera.frame().unwrap();
-
-            // get raw image as imagebuffer
-            let rgb_img: ImageBuffer<Rgb<u8>, Vec<u8>> = frame.decode_image::<RgbFormat>().unwrap();
-          
-            // convert to grayscale
-            greyscale_img = rgb_img.convert();
-            
+            left_eye_dist_ts: None,
+            right_eye_dist_ts: None,
+            left_iris_x_ts: None,
+            left_iris_y_ts: None,
         }
+    }
+}
 
-        // mirror image
-        let greyscale_img = image::imageops::flip_horizontal(&greyscale_img);
+// function that runs as a thread and performs the actual work
+// function should accept a shared state as an argument
+fn worker_thread(shared_state: Arc<Mutex<State>>) {
+    loop {
+        // get backend
+        let backend = native_api_backend().unwrap();
 
-        // first, crop to square using the shortest side
-        let (width, height) = greyscale_img.dimensions();
-        let min_side = width.min(height);
+        // print backend info
+        println!("Backend: {}", backend);
 
-        let mut square_crop = image::imageops::crop_imm(
-            &greyscale_img,
-            (width - min_side) / 2,
-            (height - min_side) / 2,
-            min_side,
-            min_side,
-        )
-        .to_image();
+        let backend = native_api_backend().unwrap();
+        let devices = query(backend).unwrap();
+        println!("There are {} available cameras.", devices.len());
 
-        if !face_box_valid {
-    
-            // resize to 256x256 for blazeface
-            let proc_img = image::imageops::resize(&square_crop, 256, 256, image::imageops::FilterType::Nearest);
-        
-            // convert Luma to pseudo RGB
-            let nvec: Vec<f32> = proc_img
-                .pixels()
-                .flat_map(|p: &Luma<u8>| vec![p[0], p[0], p[0]])
-                .map(|p| (p as f32 / 255.0 - 0.5) / 2.0)
-                .collect();
-            
-            let array: CowArray<_, _> = Array::from_shape_vec(
-                (1, 256, 256, 3),
-                nvec,
-            )
+        // set the shared state devices
+        shared_state.lock().unwrap().devices =
+            Some(devices.iter().map(|d| d.human_name()).collect());
+
+        // set up face landmarks model
+        let face_detection_model = BlazefaceModel::new();
+        let mut face_landmarks_model = MediapipeFaceLandmarksModel::new();
+
+        // select camera
+        let index_i = shared_state
+            .lock()
             .unwrap()
-            .into_dyn()
-            .into();
+            .current_device
+            .unwrap_or(0);
 
-            let inputs = vec![Value::from_array(blazeface_session.allocator(), &array)?];
+        let index = CameraIndex::Index(index_i);
 
-            let outputs: Vec<Value> = blazeface_session.run(inputs)?;
-           
+        let fps = 30;
+        let fourcc = FrameFormat::NV12;
 
-            let results01: OrtOwnedTensor<f32, _> = outputs[0].try_extract()?;
-            let results01 = results01.view().deref().clone();
+        let resolution = Resolution::new(1280, 720);
 
-            let results02: OrtOwnedTensor<f32, _> = outputs[1].try_extract()?;
-            let results02 = results02.view().deref().clone();
+        // set resolution in shared state
+        shared_state.lock().unwrap().resolution = Some((resolution.width_x, resolution.height_y));
 
-            // concatenate results along existing axis (2)
-            let result_array0 = ndarray::concatenate(Axis(1), &[results01, results02]).unwrap();
-            // covert to 3d array
-            let result_array0 = result_array0.into_dimensionality::<Ix3>().unwrap();
+        let camera_format = CameraFormat::new(resolution, fourcc, fps);
 
+        let requested =
+            RequestedFormat::new::<RgbFormat>(RequestedFormatType::Exact(camera_format));
+        println!("Opening camera {} with format {:?}", index, requested);
 
-            let results1: OrtOwnedTensor<f32, _> = outputs[2].try_extract()?;
-            let results1 = results1.view().deref().clone();
+        // // get resolution
+        // let resolution = camera.resolution();
+        // println!("Resolution: {} \n", resolution);
+        // let frame_format = camera.frame_format();
+        // println!("Frame format: {:?} \n", frame_format);
+        // let fps = camera.frame_rate();
+        // println!("FPS: {} \n", fps);
 
-            let results2: OrtOwnedTensor<f32, _> = outputs[3].try_extract()?;
-            let results2 = results2.view().deref().clone();
-    
-            // concatenate results along existing axis (2)
-            let result_array = ndarray::concatenate(Axis(1), &[results1, results2]).unwrap();
-            // covert to 3d array
-            let result_array = result_array.into_dimensionality::<Ix3>().unwrap();
+        // create ringbuffer for frame deltas
+        let mut fps_vec: Vec<f32> = Vec::new();
 
-    
+        // set last frame time
+        shared_state.lock().unwrap().last_frame_time = Some(SystemTime::now());
 
-            // find argmax of flattend result_array0 
-            let argmax = argmax(result_array0.iter().cloned().collect());
+        let mut threaded = CallbackCamera::new(index.clone(), requested, move |buffer| {
+            let last_frame_time = shared_state.lock().unwrap().last_frame_time.unwrap();
+            let mut fps_vec = shared_state.lock().unwrap().fps_vec.clone();
 
+            //convert to rgb format
+            let frame = buffer.buffer();
 
-            // get boxes
-            let boxes = decode_boxes
-            (
-                &result_array,
-                &anchors,
-                265.0,
-                265.0,
-                265.0,
-                265.0,
-            );
+            let frame = convert_nv12_to_grayscale(&frame, resolution.width_x, resolution.height_y);
+            let image_buffer = ImageBuffer::from_vec(resolution.width_x, resolution.height_y, frame).unwrap();
 
- 
-            // extract bounding box coordinates
-            let x1 = boxes[[0, argmax, 1]] * min_side as f32;
-            let y1 = boxes[[0, argmax, 0]] * min_side as f32;
-            let x2 = boxes[[0, argmax, 3]] * min_side as f32;
-            let y2 = boxes[[0, argmax, 2]] * min_side as f32;
+            // // decode image
+            // let buffer = Buffer::new(buffer.resolution(), buffer.buffer(), FrameFormat::NV12);
+            // let image_buffer = buffer.decode_image::<RgbFormat>().unwrap();
 
-            let w = x2 - x1;
-            let h = y2 - y1;
+            
+            let image = DynamicImage::ImageRgb8(image_buffer);
 
-            let mut face_box_new = [x1 - w * 0.25, y1 - h * 0.25, x2 + w * 0.25, y2 + h * 0.25];
-
-            // adjust face box to fit inside image
-            face_box_new = adjust_facebox(
-                face_box_new,
-                square_crop.width() as f32,
-                square_crop.height() as f32,
-            );
-
-            // check if the differnce in area between the new and old face box is more than 10% of the old face box
-            // OR if the distance between the center of the new and old face box is more than 10% of the width of the old face box
-            // OR if the face box was marked as invalid
-            if (get_rect_area(face_box_new) - get_rect_area(face_box)).abs() > 0.15 * get_rect_area(face_box) {
-               // let's upfate the face box
-                println!("Updating face box because it was more than 10% different in area");
-                face_box = face_box_new;
-                face_box_valid = true;
-    } else if get_rects_distance_center(face_box_new, face_box) > 0.15 * (face_box[2] - face_box[0]) {
-                println!("Updating face box because it was more than 10% different in distance");
-                face_box = face_box_new;
-                face_box_valid = true;
-            } else if !face_box_valid {
-                // if the face box was invalid, let's update it
-                println!("Updating face box because it was flagged as invalid");
-                face_box = face_box_new;
-                face_box_valid = true;
-            } else  {
-                face_box_valid = true;
+            // flip image
+            let image = image.fliph();
+            
+            if (shared_state.lock().unwrap().screen_face_landmarks.is_none() || shared_state.lock().unwrap().screen_face_landmarks.clone().unwrap().get_confidence() < 0.5) {
+                
+                let face_bbox = face_detection_model.run(&image);
+                // set face bbox
+                face_landmarks_model.set_face_bbox(&*face_bbox);
             }
 
-        
-        // make sure that the face box is fully inside the image
-        face_box[0] = face_box[0].max(0.0);
-        face_box[1] = face_box[1].max(0.0);
+            // run through mediapipe model
+            let face_landmarks = face_landmarks_model.run(&image);
 
-        }
+            
+            let ff = face_landmarks.to_metric();
 
-        // crop to bounding box (for face landmark detection)
-        let crop_face = image::imageops::crop_imm(
-            &square_crop,
-            face_box[0] as u32,
-            face_box[1] as u32,
-            (face_box[2] - face_box[0]) as u32,
-            (face_box[3] - face_box[1]) as u32,
-        )
-        .to_image();
+            // print the first point of ff
+            let metric_points = ff.get_metric_landmarks();
 
-        // resize to 256x256 
-        let mut croped_face_img = image::imageops::resize(
-            &crop_face, 
-            256, 
-            256, 
-            image::imageops::FilterType::Nearest);
 
-        // convert Luma to pseudo RGB
-        let nvec: Vec<f32> = croped_face_img.clone()
-        .to_vec()
-        .iter().flat_map(|p| vec![*p, *p, *p])
-        .map(|p| (p as f32  / 255.0 - 0.5) / 2.0)
-        .collect();
-        
-        let array: CowArray<_, _> = Array::from_shape_vec(
-            (1, 256, 256, 3),
-            nvec,
-        )
-        .unwrap()
-        .into_dyn()
-        .into();
 
-        
-        let inputs = vec![Value::from_array(eye_net_session.allocator(), &array)?];
 
-        // run inference
+            // set image
+            shared_state.lock().unwrap().image = Some(image.clone());
+
+            // set face bbox
+            shared_state.lock().unwrap().face_bbox = Some(face_landmarks.get_face_bbox());
+
+            // set landmarks
+            shared_state.lock().unwrap().screen_face_landmarks = Some(face_landmarks.into());
+
+            let frame_delta = last_frame_time.elapsed().unwrap();
+            let frame_delta = frame_delta.as_millis() as f32 / 1000.0;
        
-        let outputs: Vec<Value> = eye_net_session.run(inputs)?;
- 
-        let res: OrtOwnedTensor<f32, _> = outputs[0].try_extract()?;
-        let res = res.view().deref().clone();
+            // calculate fps
+            let fps = 1.0 / frame_delta;
 
-        
-        // convert to vector
-        let res: Vec<f32> = res.iter().cloned().collect();
+            // push to vector
+            fps_vec.push(fps);
 
-        // convert to FaceLandmarks (make sure to divide by 256)
-        let face_landmarks = face::FaceLandmarks::from_vec(res.iter().map(|p| p / 256.0).collect());
+            // remove first element if vector is longer than 25
+            if fps_vec.len() > 10 {
+                fps_vec.remove(0);
+            }
 
-        let conf: OrtOwnedTensor<f32, _> =  outputs[1].try_extract()?;
-        let conf = conf.view().deref().clone();
+            // set fps
+            shared_state.lock().unwrap().fps =
+                Some((fps_vec.iter().sum::<f32>() / fps_vec.len() as f32).round());
+            shared_state.lock().unwrap().last_frame_time = Some(SystemTime::now());
+            shared_state.lock().unwrap().fps_vec = fps_vec;
+        })
+        .unwrap();
 
-        // if conf is less than 0.5, set face_box_valid to false
-        if sigmoid(conf[[0, 0, 0, 0]]) < 0.99 {
-            face_box_valid = false;
-            println!("No face detected");
+
+        threaded.open_stream().unwrap();
+
+        #[allow(clippy::empty_loop)] // keep it running
+        loop {
+            // wait for 1ms
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+            // if macos
+            #[cfg(target_os = "macos")]
+            {
+
+                //         let frame = threaded.poll_frame();
+
+                //         if frame.is_err() {
+                //             println!("Frame error");
+                //             continue;
+                //         }
+
+                //         let frame = frame.unwrap();
+
+                //         // set frame format manually to YUYV
+                //         let frame = Buffer::new(frame.resolution(), frame.buffer(), FrameFormat::YUYV);
+
+                //         // convert to rgb format
+                //         let frame = frame.decode_image::<RgbAFormat>().unwrap();
+
+                //         // get timestamp
+                //         let timestamp = std::time::SystemTime::now()
+                //             .duration_since(std::time::UNIX_EPOCH)
+                //             .unwrap()
+                //             .as_micros();
+
+                //         // get raw image as vector
+                //         let data = frame.to_vec();
+
+                //         // convert the broken NV12 format to grayscale (hint: its not nv12)
+                //         let greyscale_vec: Vec<u8> =
+                //             convert_nv12_to_grayscale(&data, resolution.width_x, resolution.height_y);
+
+                //         // create greyscale imagebuffer
+                //         let image = DynamicImage::ImageLuma8(
+                //             ImageBuffer::from_vec(resolution.width_x, resolution.height_y, greyscale_vec)
+                //                 .unwrap(),
+                //         );
+
+                //         // convert to rgb
+                //         let image_buffer = image.to_rgb8();
+                //         let image = DynamicImage::ImageRgb8(image_buffer);
+
+                //         // flip image
+                //         let image = image.fliph();
+
+                //         // // runt through blazeface model
+                //         // let face_bbox = face_detection_model.run(&image);
+
+                //         // // set face bbox
+                //         // face_landmarks_model.set_face_bbox(&*face_bbox);
+
+                //         // // run through mediapipe model
+                //         // let face_landmarks = face_landmarks_model.run(&image);
+
+                //         // set image
+                //         shared_state.lock().unwrap().image = Some(image.clone());
+                //         // set face bbox
+                //         // shared_state.lock().unwrap().face_bbox = Some(face_bbox.to_tuple());
+                //         // // set landmarks
+                //         // shared_state.lock().unwrap().screen_face_landmarks = Some(face_landmarks.into());
+
+                //     let frame_delta = last_frame_time.elapsed().unwrap();
+                //     let frame_delta = frame_delta.as_millis() as f32 / 1000.0;
+
+                //     // calculate fps
+                //     let fps = 1.0 / frame_delta;
+
+                //     // push to vector
+                //     fps_vec.push(fps);
+
+                //     // remove first element if vector is longer than 25
+                //     if fps_vec.len() > 10 {
+                //         fps_vec.remove(0);
+                //     }
+
+                //     // check if recording is enabled
+                //     if shared_state
+                //         .lock()
+                //         .unwrap()
+                //         .is_recording
+                //         .unwrap_or_default()
+                //     {
+                //         println!("Recording frame");
+
+                //         // // get current timestamp
+                //         // let timestamp = std::time::SystemTime::now()
+                //         //     .duration_since(std::time::UNIX_EPOCH)
+                //         //     .unwrap()
+                //         //     .as_millis();
+
+                //         // // write frame to disk
+                //         // let frame_path = &shared_state.lock().unwrap().recording_path;
+                //         // let filename = format!("{}/frame_{}.png", frame_path, timestamp);
+
+                //         // // save greyscale_img image as jpg
+                //         // shared_state.lock().unwrap().image.save(filename).unwrap();
+                //     }
+
+                //     // update the shared state with the mean fps
+                //     shared_state.lock().unwrap().fps =
+                //         Some((fps_vec.iter().sum::<f32>() / fps_vec.len() as f32).round());
+
+                //     if shared_state
+                //         .lock()
+                //         .unwrap()
+                //         .current_device
+                //         .unwrap_or_default()
+                //         != index_i
+                //     {
+                //         // break out of the loop
+                //         println!(
+                //             "Device changed from {} to {}",
+                //             shared_state
+                //                 .lock()
+                //                 .unwrap()
+                //                 .current_device
+                //                 .unwrap_or_default(),
+                //             index_i
+                //         );
+                //         break;
+                //     }
+
+                //     last_frame_time = SystemTime::now();
+            }
         }
-
-        let mut image_to_show = convert_lum_image_buffer_to_rgb(square_crop.clone());
-
-
-        let black = image::Rgb([0, 0, 0]);
-        let red = image::Rgb([255u8, 0u8, 0u8]);
-        let green = image::Rgb([0u8, 255u8, 0u8]);
-        let blue = image::Rgb([0u8, 0u8, 255u8]);
-        let white = image::Rgb([255u8, 255u8, 255u8]);
-
-        // create dictionary of keypoints
-
-        fn to_image_coords(p:Point2<f32>, face_box: [f32; 4]) -> Point2<f32> {
-            let x = p.x * (face_box[2] - face_box[0]) + face_box[0];
-            let y = p.y * (face_box[3] - face_box[1]) + face_box[1];
-            Point2::new(x, y)
-        }
-
-        // iterate over results and draw keypoints (478 in total)
-        for p in face_landmarks.points.iter() {
-            let p = to_image_coords(p.xy(), face_box);
-            draw_cross_mut(&mut image_to_show, black, p.x as i32, p.y as i32);
-
-        }
-
-        // draw face box
-        draw_hollow_rect_mut(
-            &mut image_to_show,
-            Rect::at(face_box[0] as i32, face_box[1] as i32)
-                .of_size((face_box[2] - face_box[0]) as u32, (face_box[3] - face_box[1]) as u32),
-            blue,
-        );
-
-        // draw eye corners as vector as 2d points
-        let left_eye_corners = face_landmarks.get_mesh(LandmarkMesh::LeftEye).iter().map(|p| to_image_coords(p.xy(), face_box)).collect::<Vec<_>>();
-        let right_eye_corners = face_landmarks.get_mesh(LandmarkMesh::RightEye).iter().map(|p| to_image_coords(p.xy(), face_box)).collect::<Vec<_>>();
-        let left_pupil_corners = face_landmarks.get_mesh(LandmarkMesh::LeftPupil).iter().map(|p| to_image_coords(p.xy(), face_box)).collect::<Vec<_>>();
-        let right_pupil_corners = face_landmarks.get_mesh(LandmarkMesh::RightPupil).iter().map(|p| to_image_coords(p.xy(), face_box)).collect::<Vec<_>>();
-        
-        draw_hollow_polygon_mut(&mut image_to_show,left_eye_corners.as_slice(),red);
-        draw_hollow_polygon_mut(&mut image_to_show,right_eye_corners.as_slice(),red);
-        let (left_pupil_center, left_pupil_radius) = fit_circle(left_pupil_corners.as_slice());
-        draw_hollow_circle_mut(&mut image_to_show, (left_pupil_center.x as i32, left_pupil_center.y as i32), left_pupil_radius as i32, green);
-        let (right_pupil_center, right_pupil_radius) = fit_circle(right_pupil_corners.as_slice());
-        draw_hollow_circle_mut(&mut image_to_show, (right_pupil_center.x as i32, right_pupil_center.y as i32), right_pupil_radius as i32, green);
-
-        // draw pupil centers
-        let left_pupil_center = to_image_coords(face_landmarks.get_point(LandmarkPoint::LeftPupil).xy(), face_box);
-        draw_cross_mut(&mut image_to_show, green, left_pupil_center.x as i32, left_pupil_center.y as i32);
-        let right_pupil_center = to_image_coords(face_landmarks.get_point(LandmarkPoint::RightPupil).xy(), face_box);
-        draw_cross_mut(&mut image_to_show, green, right_pupil_center.x as i32, right_pupil_center.y as i32);
-
-        // draw pupil corners in green
-        for p in left_pupil_corners.iter() {
-            draw_cross_mut(&mut image_to_show, green, p.x as i32, p.y as i32);
-        }
-        for p in right_pupil_corners.iter() {
-            draw_cross_mut(&mut image_to_show, green, p.x as i32, p.y as i32);
-        }
-    
-        // plot fps (1s divided by average frame delta) (if there are less than 5 frames, fps is 0)
-        let fps = if frame_deltas.len() < 5 {
-            0.0
-        } else {
-            1.0 / (frame_deltas[2..].iter().sum::<std::time::Duration>().as_secs_f32() / frame_deltas.len() as f32)
-        };
-
-        draw_text_mut(
-            &mut image_to_show,
-            white,
-            0,
-            0,
-            Scale { x: 20.0, y: 20.0 },
-            &font,
-            &format!("FPS: {:.2}", fps),
-        );
-
-        // use image_show to display the frame
-        window.set_image("image", image_to_show)?;
-
-        // calculate frame delta
-        let frame_delta = last_frame.elapsed();
-        last_frame = std::time::Instant::now();
-
-        // push frame delta to ringbuffer
-        frame_deltas.push(frame_delta);
-
-        // remove first element if ringbuffer is full
-        if frame_deltas.len() > 100 {
-            frame_deltas.remove(0);
-        }
-
-        // check if recording is enabled
-        if is_recording {
-
-            // get current timestamp
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis();
-
-            // write frame to disk
-            let filename = format!("{}/frame_{}.png", frame_path, timestamp);
-
-            // save greyscale_img image as jpg
-            greyscale_img.save(filename).unwrap();
-
-        }
-
-        let end = SystemTime::now();
-
-        // get inference time
-        let inference_time = end.duration_since(start).unwrap();
-        println!("Frame processed in {}ms", inference_time.as_millis());
     }
+}
 
-    // return
-    Ok(())
+// When compiling natively:
+fn main() -> eframe::Result<()> {
+    dcp::initialize();
+
+    env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
+
+    // create rgba dummy image
+    let vec: Vec<u8> = vec![0u8; 1280 * 720 * 3];
+
+    // create new shared state
+    let shared_state: SharedState = Arc::new(Mutex::new(State::default()));
+
+    // create a thread and run the worker function in it
+    let thread_data = Arc::clone(&shared_state);
+    std::thread::spawn(|| worker_thread(thread_data));
+
+    // // start the nng server
+    // let thread_data2 = Arc::clone(&shared_state);
+    // std::thread::spawn(|| server(thread_data2));
+
+    // start the gui
+    let gui_data = Arc::clone(&shared_state);
+
+    let native_options = eframe::NativeOptions::default();
+
+    eframe::run_native(
+        "Camera Recorder v0.0.2",
+        native_options,
+        Box::new(move |cc| {
+            let _re_ui = re_ui::ReUi::load_and_apply(&cc.egui_ctx);
+            Box::new(TemplateApp::new(cc, gui_data))
+        }),
+    )
+}
+
+pub struct TemplateApp {
+    // this how you opt-out of serialization of a member
+    saturation: f32,
+    brightness: f32,
+    contrast: f32,
+    shared_state: SharedState,
+}
+
+impl TemplateApp {
+    /// Called once before the first frame.
+    pub fn new(cc: &eframe::CreationContext<'_>, shared_state: SharedState) -> Self {
+        // This is also where you can customize the look and feel of egui using
+        // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
+
+        Self {
+            // Example stuff:
+            saturation: 1.0,
+            brightness: 1.0,
+            contrast: 1.0,
+            shared_state,
+        }
+    }
+}
+
+impl eframe::App for TemplateApp {
+    /// Called each time the UI needs repainting, which may be many times per second.
+    /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let Self {
+            saturation,
+            brightness,
+            contrast,
+            shared_state,
+        } = self;
+
+        // Examples of how to create different panels and windows.
+        // Pick whichever suits you.
+        // Tip: a good default choice is to just keep the `CentralPanel`.
+        // For inspiration and more examples, go to https://emilk.github.io/egui
+
+        #[cfg(not(target_arch = "wasm32"))] // no File->Quit on web pages!
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            // The top panel is often a good place for a menu bar:
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Quit").clicked() {
+                        _frame.close();
+                    }
+                });
+            });
+        });
+
+        egui::SidePanel::left("side_panel").show(ctx, |ui| {
+            // add scrollable area
+
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                // dropdown with devices;
+
+                // let devices = shared_state.lock().unwrap().devices.clone().unwrap_or_default();
+                // let mut selected_device = shared_state
+                //     .lock()
+                //     .unwrap()
+                //     .current_device
+                //     .unwrap_or_default() as usize;
+
+                // egui::ComboBox::from_label("Camera")
+                //     .selected_text(format!("{:?}", devices[selected_device]))
+                //     .show_ui(ui, |ui| {
+                //         for (i, device) in devices.iter().enumerate() {
+                //             ui.selectable_value(&mut selected_device, i as usize, device);
+                //         }
+                //     });
+
+                // // set mutex
+                // shared_state.lock().unwrap().current_device = Some(selected_device as u32);
+
+                // ui.add(egui::Slider::new(saturation, 0.0..=10.0).text("Saturation"));
+                // ui.add(egui::Slider::new(brightness, 0.0..=10.0).text("Brightness"));
+                // ui.add(egui::Slider::new(contrast, 0.0..=10.0).text("Contrast"));
+                // add text (from shared state)
+                let fps = shared_state.lock().unwrap().fps.unwrap_or(0.0);
+                let resolution = shared_state.lock().unwrap().resolution.unwrap_or((0, 0));
+
+                ui.add(egui::Label::new(format!("FPS: {}", fps)));
+                ui.add(egui::Label::new(format!(
+                    "Resolution: {}x{}",
+                    resolution.0, resolution.1
+                )));
+
+                ui.add(egui::Label::new(format!(
+                    "Recording: {}",
+                    shared_state
+                        .lock()
+                        .unwrap()
+                        .is_recording
+                        .unwrap_or_default()
+                )));
+            });
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            // check if image is valid
+
+            if shared_state.lock().unwrap().image.clone().is_some()
+                && shared_state.lock().unwrap().face_bbox.clone().is_some()
+            {
+                let mut image = shared_state.lock().unwrap().image.clone().unwrap();
+                let face_bbox = shared_state.lock().unwrap().face_bbox.clone().unwrap();
+
+                // draw face box
+                let green = image::Rgba([0u8, 255u8, 0u8, 255u8]);
+                let rect: imageproc::rect::Rect =
+                    imageproc::rect::Rect::at(face_bbox.0 as i32, face_bbox.1 as i32)
+                        .of_size(face_bbox.2, face_bbox.3);
+
+                draw_hollow_rect_mut(&mut image, rect, green);
+
+                // draw all landmarks
+                let face_landmarks = shared_state
+                    .lock()
+                    .unwrap()
+                    .screen_face_landmarks
+                    .clone()
+                    .unwrap();
+
+                let landmarks = face_landmarks.get_landmarks();
+
+                for landmark in landmarks.iter() {
+                    draw_cross_mut(&mut image, green, landmark.x as i32, landmark.y as i32);
+                }
+
+                let imgage_size = [image.width() as usize, image.height() as usize];
+
+                let ui_image = egui::ColorImage::from_rgb(
+                    imgage_size,
+                    image.as_rgb8().unwrap().as_raw().as_slice(),
+                );
+                let texture_hdl =
+                    ctx.load_texture("image", ui_image, egui::TextureOptions::default());
+
+                // add image and set size to panel width
+                let ui_img_width = ui.available_width();
+                let ui_img_height = ui_img_width / (image.width() as f32 / image.height() as f32);
+
+                ui.image(&texture_hdl, egui::Vec2::new(ui_img_width, ui_img_height));
+
+                // // aquire the mutex
+                // let guard = shared_state.lock().unwrap();
+                // // clone the image
+                // let mut image = guard.image.clone();
+                // let face_landmarks = guard.face_landmarks.clone();
+                // let face_box = guard.face_box.clone();
+                // let image_valid = guard.image_valid.clone();
+                // let rotation_matrix = guard.rotation_matrix.clone();
+                // let left_eye_dist_ts = guard.left_eye_dist_ts.clone();
+                // let right_eye_dist_ts = guard.right_eye_dist_ts.clone();
+                // let left_iris_x_ts = guard.left_iris_x_ts.clone();
+                // let left_iris_y_ts = guard.left_iris_y_ts.clone();
+                // // unlock the mutex
+                // std::mem::drop(guard);
+
+                // // check if image is valid
+                // if image_valid {
+                //     // flip the image
+                //     let mut image = image.fliph();
+
+                //     let green = image::Rgba([0u8, 255u8, 0u8, 255u8]);
+                //     let red = image::Rgba([255u8, 0u8, 0u8, 255u8]);
+
+                //     let imgage_size = [image.width() as usize, image.height() as usize];
+
+                //     // draw face box
+                //     let face_box_px: [f32; 4] = face_box
+                //         .fliph()
+                //         .to_pixel_space(imgage_size[0] as u32, imgage_size[1] as u32);
+                //     let rect = imageproc::rect::Rect::at(face_box_px[0] as i32, face_box_px[1] as i32)
+                //         .of_size(
+                //             (face_box_px[2] - face_box_px[0]) as u32,
+                //             (face_box_px[3] - face_box_px[1]) as u32,
+                //         );
+
+                //     draw_hollow_rect_mut(&mut image, rect, green);
+
+                //     // plot face landmarks
+                //     for p in face_landmarks.points.iter() {
+                //         // convert to image coords
+                //         let x = (1.0 - p.x) * (face_box_px[2] - face_box_px[0]) + face_box_px[0];
+                //         let y = p.y * (face_box_px[3] - face_box_px[1]) + face_box_px[1];
+
+                //         draw_cross_mut(&mut image, green, x as i32, y as i32);
+                //     }
+
+                //     let panel_width = ui.available_width();
+
+                //     let ui_image = egui::ColorImage::from_rgb(
+                //         imgage_size,
+                //         image.as_rgb8().unwrap().as_raw().as_slice(),
+                //     );
+                //     let texture_hdl =
+                //         ctx.load_texture("image", ui_image, egui::TextureOptions::default());
+
+                //     ui.image(&texture_hdl, egui::Vec2::new(panel_width, panel_width));
+
+                //     // cut the face and show it as well
+                //     let mut image_face = image
+                //         .crop_imm(
+                //             (face_box_px[0] as i32) as u32,
+                //             (face_box_px[1] as i32) as u32,
+                //             (face_box_px[2] - face_box_px[0]) as u32,
+                //             (face_box_px[3] - face_box_px[1]) as u32,
+                //         )
+                //         .clone();
+
+                //     let imgage_size = [image_face.width() as usize, image_face.height() as usize];
+
+                //     let ui_image = egui::ColorImage::from_rgb(
+                //         imgage_size,
+                //         image_face.as_rgb8().unwrap().as_raw().as_slice(),
+                //     );
+                //     let texture_hdl =
+                //         ctx.load_texture("image", ui_image, egui::TextureOptions::default());
+
+                //     // add image and set size to panel width
+
+                //     ui.image(&texture_hdl, egui::Vec2::new(panel_width, panel_width));
+
+                //     let projection_matrix =
+                //         na::Perspective3::new(1.0, 1.0, 0.1, 1000.0).to_homogeneous();
+
+                //     // create model matrix
+                //     let model_matrix = na::Matrix4::identity();
+
+                //     let mut view_matrix = na::Matrix4::look_at_rh(
+                //         &na::Point3::new(0.0, 0.0, 2.0),
+                //         &na::Point3::new(0.0, 0.0, 0.0),
+                //         &na::Vector3::new(0.0, 1.0, 0.0),
+                //     );
+
+                //     // extract euler angles
+                //     let euler_angles = na::Rotation3::from_matrix(&rotation_matrix).euler_angles();
+                //     ui.add(egui::Label::new(format!(
+                //         "Euler angles (deg): pitch: {:.2}, yaw: {:.2}, roll: {:.2}",
+                //         euler_angles.0.to_degrees(),
+                //         euler_angles.1.to_degrees(),
+                //         euler_angles.2.to_degrees()
+                //     )));
+
+                //     // rotate the view matrix
+                //     view_matrix = view_matrix
+                //         * na::Matrix4::from_euler_angles(
+                //             euler_angles.0,
+                //             euler_angles.1,
+                //             euler_angles.2,
+                //         );
+
+                //     let gizmo = Gizmo::new("My gizmo")
+                //         .view_matrix(view_matrix)
+                //         .projection_matrix(projection_matrix)
+                //         .model_matrix(model_matrix)
+                //         .mode(GizmoMode::Rotate);
+
+                // // get current timestamp
+                // let current_timestamp = std::time::SystemTime::now()
+                //     .duration_since(std::time::UNIX_EPOCH)
+                //     .unwrap()
+                //     .as_micros();
+
+                // // plot left eye distance
+                // let line1: PlotPoints = left_eye_dist_ts
+                //     .data
+                //     .iter()
+                //     .zip(left_eye_dist_ts.timestamp.iter())
+                //     .map(|(value, timestamp)| {
+                //         let x = (current_timestamp - *timestamp) as f64 * -0.000001;
+                //         let y = *value as f64;
+                //         [x, y]
+                //     })
+                //     .collect();
+
+                // let line2: PlotPoints = right_eye_dist_ts
+                //     .data
+                //     .iter()
+                //     .zip(right_eye_dist_ts.timestamp.iter())
+                //     .map(|(value, timestamp)| {
+                //         let x = (current_timestamp - *timestamp) as f64 * -0.000001;
+                //         let y = *value as f64;
+                //         [x, y]
+                //     })
+                //     .collect();
+
+                // Plot::new("my_plot").view_aspect(2.0).show(ui, |plot_ui| {
+                //     plot_ui.line(Line::new(line1));
+                //     plot_ui.line(Line::new(line2));
+                // });
+            }
+        });
+
+        // redraw everything 30 times per second by default:
+        ctx.request_repaint_after(Duration::from_secs(1 / 30));
+    }
+}
+
+
+
+
+#[inline]
+pub fn yuv422_to_rgb24(in_buf: &[u8], out_buf: &mut [u8]) {
+    debug_assert!(out_buf.len() as f32 == in_buf.len() as f32 * 1.5);
+
+    in_buf
+        .par_chunks_exact(4) // FIXME: use par_array_chunks() when stabalized (https://github.com/rayon-rs/rayon/pull/789)
+        .zip(out_buf.par_chunks_exact_mut(6))
+        .for_each(|(ch, out)| {
+            let y1 = ch[1];
+            let y2 = ch[3];
+            let cb = ch[0];
+            let cr = ch[2];
+
+            let (r, g, b) = ycbcr_to_rgb(y1, cb, cr);
+
+            out[0] = r;
+            out[1] = g;
+            out[2] = b;
+
+            let (r, g, b) = ycbcr_to_rgb(y2, cb, cr);
+
+            out[3] = r;
+            out[4] = g;
+            out[5] = b;
+        });
+}
+
+// COLOR CONVERSION: https://stackoverflow.com/questions/28079010/rgb-to-ycbcr-using-simd-vectors-lose-some-data
+
+#[inline]
+fn ycbcr_to_rgb(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
+    let ycbcr = f32x4::from_array([y as f32, cb as f32 - 128.0f32, cr as f32 - 128.0f32, 0.0]);
+
+    // rec 709: https://mymusing.co/bt-709-yuv-to-rgb-conversion-color/
+    let r = (ycbcr * f32x4::from_array([1.0, 0.00000, 1.5748, 0.0])).reduce_sum();
+    let g = (ycbcr * f32x4::from_array([1.0, -0.187324, -0.468124, 0.0])).reduce_sum();
+    let b = (ycbcr * f32x4::from_array([1.0, 1.8556, 0.00000, 0.0])).reduce_sum();
+
+    (clamp(r), clamp(g), clamp(b))
+}
+
+// fn rgb_to_ycbcr((r, g, b): (u8, u8, u8)) -> (u8, u8, u8) {
+//     let rgb = F32x4(r as f32, g as f32, b as f32, 1.0);
+//     let y = sum(mul(&rgb, F32x4(0.299000, 0.587000, 0.114000, 0.0)));
+//     let cb = sum(mul(&rgb, F32x4(-0.168736, -0.331264, 0.500000, 128.0)));
+//     let cr = sum(mul(&rgb, F32x4(0.500000, -0.418688, -0.081312, 128.0)));
+
+//     (clamp(y), clamp(cb), clamp(cr))
+// }
+
+#[inline]
+fn clamp(val: f32) -> u8 {
+    if val < 0.0 {
+        0
+    } else if val > 255.0 {
+        255
+    } else {
+        val.round() as u8
+    }
 }
