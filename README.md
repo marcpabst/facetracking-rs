@@ -23,10 +23,10 @@
 | Platform      | Status        | DNN backends   |
 | ------------- | ------------- | ------------- |
 | MacOS (Apple Silicon)         | :heavy_check_mark: | CoreML, CPU |
-| MacOS (Intel)         | untested  |  |
-| Linux (x86_64)         | untested  | |
-| Windows (x86_64)         | :heavy_check_mark:  | CUDA, oneDNN, CPU |
-| Browser (WASM)         | untested | |
+| MacOS (Intel)         | untested  | CPU |
+| Linux (x86_64)         | untested  | CPU |
+| Windows (x86_64)         | :heavy_check_mark:  | CPU |
+| Browser (WASM)         | planned | |
 
 ### Models
 | Type      | Model      | Capabilities        |
