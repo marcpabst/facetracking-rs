@@ -2,9 +2,27 @@ name: build
 on: [push, pull_request]
 
 jobs:
-  test:
-    name: cargo test
+  build_linux:
+    name: build on linux
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+      - run: cargo build
+  build_windows:
+    name: build on windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+      - run: cargo build
+  build_macos:
+    name: build on macos
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
