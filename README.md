@@ -1,4 +1,6 @@
-# facetracking-rs // Facetracking in Rust
+# 👩 facetracking-rs
+**Fast and accurate facetracking in Rust.**
+
 [![build](https://github.com/marcpabst/facetracking-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/marcpabst/facetracking-rs/actions/workflows/rust.yml)
 
 `facetracking-rs` is a Rust library that provides a high-level API for face detection and tracking. It uses `onnxruntime` through the `ort` crate to run deep learning models. 
