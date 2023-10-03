@@ -4,6 +4,9 @@
 
 :construction: This is very much a work in progress. :construction:
 
+> [!IMPORTANT] 
+> On macOS, this currently needs to be compiled using Rust nightly. This is due to the usage of unstable standard library features in a workaround.
+
 ### Features
 - [x] :woman: Face detection and tracking
 - [x] :pushpin: 2D face landmarks
