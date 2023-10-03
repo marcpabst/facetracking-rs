@@ -12,11 +12,21 @@
 > [!IMPORTANT] 
 > On macOS, this currently needs to be compiled using Rust nightly. This is due to the usage of unstable standard library features.
 
+
+### Usage
+This projects consists of two crates: `facetracking` and `facetracking-webcam`. The former provides the core functionality, while the latter provides an advanced GUI application that can enables tracking facial landmarks in real-time using a webcam.
+
+It is also planned to provide Python bindings for this library.
+
 ### Features
 - [x] :woman: Face detection and tracking
 - [x] :pushpin: 2D face landmarks
+- [x] :camera: Webcam GUI application
 - [ ] 🌐 3D (metric) face landmarks
+- [ ] :computer: Head pose estimation
 - [ ] :eyes: Eye gaze estimation
+- [ ] :snake: Python bindings
+
 
 ### Supported platforms
 
