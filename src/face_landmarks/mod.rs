@@ -1,7 +1,5 @@
 pub mod model_mediapipe;
 
-use crate::face_detection::FaceBoundingBox;
-
 use image::DynamicImage;
 use nalgebra::Point3;
 
@@ -25,7 +23,5 @@ trait FaceLandmarks: ScreenFaceLandmarks + MetricFaceLandmarks {}
 
 // define FaceLandmarksModel trait
 pub trait FaceLandmarksModel {
-    fn run(&mut self, image: &DynamicImage) -> Box<dyn ScreenFaceLandmarks>;
-    fn set_face_bbox(&mut self, face_bbox: &dyn FaceBoundingBox);
-    fn get_face_bbox(&self) -> Option<(u32, u32, u32, u32)>;
+    fn run(&self, image: &DynamicImage, face_bbox: Option<(u32, u32, u32, u32)>) -> (Box<dyn ScreenFaceLandmarks>, (u32, u32, u32, u32));
 } 

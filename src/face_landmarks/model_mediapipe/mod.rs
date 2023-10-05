@@ -4,7 +4,6 @@ use canonical_face_model::CANONICAL_FACE_MODEL_WEIGHTS;
 use canonical_face_model::CANONICAL_FACE_MODEL_WEIGHTS_LANDMARK_IDS;
 use nalgebra::DVector;
 
-use crate::face_detection::FaceBoundingBox;
 use crate::face_landmarks::{FaceLandmarksModel, MetricFaceLandmarks, ScreenFaceLandmarks};
 
 mod procrustes_solver;
@@ -35,7 +34,7 @@ type Matrix3X<T> = Matrix<T, U3, Dyn, VecStorage<T, U3, Dyn>>;
 pub struct MediapipeFaceLandmarks {
     // the 3D points of the face mesh
     points: Vec<Point3>,
-    metric_points: Option<Vec<Point3>>,
+    //metric_points: Option<Vec<Point3>>,
     face_bbox: (u32, u32, u32, u32),
     face_confidence: f32,
     image_width: u32,
@@ -78,7 +77,7 @@ impl MediapipeFaceLandmarks {
     ) -> MediapipeFaceLandmarks {
         let mut landmarks = MediapipeFaceLandmarks {
             points: Vec::new(),
-            metric_points: None,
+            //metric_points: None,
             face_bbox: face_bbox,
             face_confidence: face_confidence,
             image_width: image_width,
@@ -217,11 +216,11 @@ impl MediapipeFaceLandmarks {
 
         // current coordinates are in relation tot the current face bounding box
 
-        x_min = (x_min * self.face_bbox.2 as f32 + self.face_bbox.0 as f32);
-        y_min = (y_min * self.face_bbox.3 as f32 + self.face_bbox.1 as f32);
+        x_min = x_min * self.face_bbox.2 as f32 + self.face_bbox.0 as f32;
+        y_min = y_min * self.face_bbox.3 as f32 + self.face_bbox.1 as f32;
 
-        x_max = (x_max * self.face_bbox.2 as f32 + self.face_bbox.0 as f32);
-        y_max = (y_max * self.face_bbox.3 as f32 + self.face_bbox.1 as f32);
+        x_max = x_max * self.face_bbox.2 as f32 + self.face_bbox.0 as f32;
+        y_max = y_max * self.face_bbox.3 as f32 + self.face_bbox.1 as f32;
 
         let w = x_max - x_min;
         let h = y_max - y_min;
@@ -512,9 +511,7 @@ impl MetricFaceLandmarks for MediapipeMetricFaceLandmarks {
 }
 
 pub struct MediapipeFaceLandmarksModel<'a> {
-    enviroment: Arc<Environment>,
     session: Arc<InMemorySession<'a>>,
-    face_bbox: Option<(u32, u32, u32, u32)>,
 }
 
 impl MediapipeFaceLandmarksModel<'_> {
@@ -535,17 +532,19 @@ impl MediapipeFaceLandmarksModel<'_> {
             .unwrap();
 
         MediapipeFaceLandmarksModel {
-            enviroment: enviroment,
             session: Arc::new(session),
-            face_bbox: None,
+    
         }
     }
 }
 
 impl FaceLandmarksModel for MediapipeFaceLandmarksModel<'_> {
-    fn run(&mut self, input: &DynamicImage) -> Box<dyn ScreenFaceLandmarks> {
+    fn run(&self, input: &DynamicImage, face_bbox: Option<(u32, u32, u32, u32)>) -> (Box<dyn ScreenFaceLandmarks>, (u32, u32, u32, u32)) {
+        
         // if face bounding box is set, crop the image accordingly
-        let face_bbox = self.face_bbox.unwrap_or((0, 0, 720, 720));
+        let face_bbox = face_bbox.unwrap_or((0, 0, 720, 720));
+
+        let original_face_bbox = face_bbox.clone();
 
         // add padding to face bounding box
         // add 30% padding to the face bounding box
@@ -559,7 +558,7 @@ impl FaceLandmarksModel for MediapipeFaceLandmarksModel<'_> {
         );
 
         // adjust face bounding box to fit the image
-        let face_bbox = adjust_bbox(
+        let mut face_bbox = adjust_bbox(
             face_bbox.0,
             face_bbox.1,
             face_bbox.2,
@@ -615,33 +614,20 @@ impl FaceLandmarksModel for MediapipeFaceLandmarksModel<'_> {
         //println!("face confidence: {}", face_flag);
         // update face bounding box if a face was detected (more than 90% confidence)
         if face_landmarks.face_confidence > 0.5 {
-            // print confidence
-
-            let new_face_bbox = face_landmarks.get_face_bbox_from_landmarks();
-            self.face_bbox = Some(new_face_bbox);
-
+            face_bbox = face_landmarks.get_face_bbox_from_landmarks();
+        }
+        else {
+            // use original face bounding box
+            face_bbox = original_face_bbox;
         }
 
-        Box::new(face_landmarks)
+        (Box::new(face_landmarks), face_bbox)
     }
-
-    fn set_face_bbox(&mut self, face_bbox: &dyn FaceBoundingBox) {
-        // set face bounding box
-        let f = face_bbox.to_tuple();
-
-        self.face_bbox = Some(f);
-    }
-
-    fn get_face_bbox(&self) -> Option<(u32, u32, u32, u32)> {
-        self.face_bbox
-    }
+    
 }
 
-fn normalize_vector(v: Vector3<f64>) -> Vector3<f64> {
-    v / v.norm()
-}
 
-fn ray_sphere_intersect(
+pub fn ray_sphere_intersect(
     ray_origin: Point3,
     ray_dir: Vector3<f32>,
     sphere_origin: Point3,

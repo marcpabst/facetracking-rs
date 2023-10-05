@@ -1,10 +1,10 @@
 [package]
-name = "rust_eyetracking"
-version = "0.1.0"
+name = "facetracking"
+version = "0.1.0-alpha.1"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
-dcv-color-primitives = "0.5.4"
 image = "0.24.7"
 ort = "1.15.5"
 ndarray = "0.15.6"
@@ -23,15 +23,17 @@ egui = "0.22.0"
 eframe = "0.22.0"
 egui_glow = "0.22.0"
 re_ui = "0.8.2"
-egui-gizmo = "0.11.0"
 rayon = "1.8.0"
+openpnp_capture = "0.2.4"
+openpnp_capture_sys = "0.4.0"
 
-[dependencies.show-image]
-version = "0.13.1"
-features = ["image"]
+#[dependencies.show-image]
+#version = "0.13.1"
+#features = ["image"]
 
-[dependencies.nokhwa]
-git = "https://github.com/l1npengtul/nokhwa"
-branch = "0.10"
-version = "0.10.4"
-features = ["input-native", "output-threaded"]
+#[dependencies.nokhwa]
+#git = "https://github.com/l1npengtul/nokhwa"
+#branch = "0.10"
+#version = "0.10.4"
+#features = ["input-native", "output-threaded"]
+

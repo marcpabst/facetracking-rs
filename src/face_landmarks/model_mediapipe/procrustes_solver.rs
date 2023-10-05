@@ -1,15 +1,10 @@
 // translated from mediapipe/modules/face_geometry/libs/procrustes_solver.cc
 
-use nalgebra::allocator::Allocator;
-use nalgebra::constraint::{SameNumberOfRows, ShapeConstraint};
-use nalgebra::linalg::SVD;
-use nalgebra::storage::Storage;
-use nalgebra::{Scalar, ArrayStorage, Dim, Vector, DefaultAllocator};
-use nalgebra::{
-    Const, DMatrix, DVector, Dyn, Matrix, Matrix3, Matrix3xX, Matrix4, RowDVector, RowVector3,
-    VecStorage, Vector3, U1, U3,
+
+use nalgebra::{DVector, Dyn, Matrix, Matrix3, Matrix3xX, Matrix4,
+    VecStorage, Vector3, U3,
 };
-use ndarray::Axis;
+
 use std::f32::EPSILON;
 
 // define Matrix3X as a type alias for

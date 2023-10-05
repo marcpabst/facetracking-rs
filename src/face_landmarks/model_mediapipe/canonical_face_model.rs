@@ -1,4 +1,4 @@
-use nalgebra::{matrix, SMatrix, dmatrix, Matrix};
+use nalgebra::{matrix, SMatrix};
 
 pub const CANONICAL_FACE_MODEL_WEIGHTS_LANDMARK_IDS: [i32; 33] = [
     4, 6, 10, 33, 54, 67, 117, 119, 121, 127, 129, 132, 133, 136, 143, 147, 198, 205, 263, 284,
