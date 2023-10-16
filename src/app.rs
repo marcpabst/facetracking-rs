@@ -1,13 +1,9 @@
-use imageproc::drawing::draw_cross_mut;
-use imageproc::drawing::draw_hollow_rect_mut;
-
 use std::time::Duration;
 
-use crate::webcam::CameraOptionBool;
-use crate::webcam::CameraOptionInt;
+use imageproc::drawing::{draw_cross_mut, draw_hollow_rect_mut};
 
 use crate::utils::*;
-
+use crate::webcam::{CameraOptionBool, CameraOptionInt};
 
 pub struct FacetrackingApp {
     shared_state: SharedState,
@@ -15,9 +11,7 @@ pub struct FacetrackingApp {
 
 impl FacetrackingApp {
     pub fn new(_cc: &eframe::CreationContext<'_>, shared_state: SharedState) -> Self {
-        Self {
-            shared_state,
-        }
+        Self { shared_state }
     }
 }
 
@@ -25,9 +19,7 @@ impl eframe::App for FacetrackingApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let Self {
-            shared_state,
-        } = self;
+        let Self { shared_state } = self;
 
         // Examples of how to create different panels and windows.
         // Pick whichever suits you.

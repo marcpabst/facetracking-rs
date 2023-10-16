@@ -4,15 +4,12 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use image::DynamicImage;
-
 use ndarray::prelude::*;
 use ndarray_npy::ReadNpyExt;
-
-use ort::{Environment, ExecutionProvider, InMemorySession, SessionBuilder, Value};
 use ort::tensor::OrtOwnedTensor;
+use ort::{Environment, ExecutionProvider, InMemorySession, SessionBuilder, Value};
 
-use crate::face_detection::FaceBoundingBox;
-use crate::face_detection::FaceDetectionModel;
+use crate::face_detection::{FaceBoundingBox, FaceDetectionModel};
 
 pub struct BlazefaceFaceResult {
     pub x: f32,
@@ -110,7 +107,6 @@ impl BlazefaceModel<'_> {
         w_scale: f32,
         h_scale: f32,
     ) -> Array3<f32> {
-
         let anchors = &self.anchors;
 
         let shape = raw_boxes.shape();
@@ -161,7 +157,8 @@ impl FaceDetectionModel for BlazefaceModel<'_> {
         );
 
         // resize to 256x256
-        let cropped_image = cropped_image.resize_exact(256, 256, image::imageops::FilterType::Nearest);
+        let cropped_image =
+            cropped_image.resize_exact(256, 256, image::imageops::FilterType::Nearest);
 
         // convert to RGB
         let input = cropped_image.to_rgb8();
@@ -191,7 +188,7 @@ impl FaceDetectionModel for BlazefaceModel<'_> {
 
         // concatenate results along existing axis (2)
         let result_array0 = ndarray::concatenate(Axis(1), &[results01, results02]).unwrap();
-        
+
         // covert to 3d array
         let result_array0 = result_array0.into_dimensionality::<Ix3>().unwrap();
 
@@ -218,7 +215,6 @@ impl FaceDetectionModel for BlazefaceModel<'_> {
         let y1 = boxes[[0, argmax, 0]];
         let x2 = boxes[[0, argmax, 3]];
         let y2 = boxes[[0, argmax, 2]];
-
 
         let width = x2 - x1;
         let height = y2 - y1;

@@ -1,32 +1,26 @@
 extern crate facetracking;
 
-use facetracking::face_detection::model_blazeface::BlazefaceModel;
-use facetracking::face_detection::FaceDetectionModel;
-
-use facetracking::face_landmarks::model_mediapipe::MediapipeFaceLandmarksModel;
-use facetracking::face_landmarks::FaceLandmarksModel;
-
-use facetracking::utils::SharedState;
-use facetracking::utils::State;
-use facetracking::webcam::*;
-
-use crate::facetracking::app::FacetrackingApp;
-
-use rayon::spawn_fifo;
-
-use image::{DynamicImage, ImageBuffer};
-
-use openpnp_capture::{context::CONTEXT, Device, Format, Stream};
-
 use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use facetracking::face_detection::model_blazeface::BlazefaceModel;
+use facetracking::face_detection::FaceDetectionModel;
+use facetracking::face_landmarks::model_mediapipe::MediapipeFaceLandmarksModel;
+use facetracking::face_landmarks::FaceLandmarksModel;
+use facetracking::utils::{SharedState, State};
+use facetracking::webcam::*;
+use image::{DynamicImage, ImageBuffer};
 use nng::{Aio, AioResult, Context, Protocol, Socket};
+use openpnp_capture::context::CONTEXT;
+use openpnp_capture::{Device, Format, Stream};
+use rayon::spawn_fifo;
+
+use crate::facetracking::app::FacetrackingApp;
 
 const ADDRESS: &'static str = "tcp://127.0.0.1:54321";
 
-fn server(shared_state: SharedState) -> Result<(), nng::Error> {
+fn nng_server(shared_state: SharedState) -> Result<(), nng::Error> {
     // check if there is a shared state
 
     // Set up the server and listen for connections on the specified address.
@@ -36,26 +30,21 @@ fn server(shared_state: SharedState) -> Result<(), nng::Error> {
     // from the client.
     let ctx = Context::new(&s)?;
     let ctx_clone = ctx.clone();
-    let aio =
-        Aio::new(move |aio, res| worker_callback(aio, &ctx_clone, res, shared_state.clone()))?;
+    let aio = Aio::new(move |aio, res| nng_callback(aio, &ctx_clone, res, shared_state.clone()))?;
 
     s.listen(ADDRESS)?;
-
-    // start the worker thread
-    // subscribe to messages
 
     ctx.recv(&aio)?;
 
     println!("Server listening on {}", ADDRESS);
 
     loop {
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(10000));
     }
 }
 
-fn worker_callback(aio: Aio, ctx: &Context, res: AioResult, shared_state: SharedState) {
-    // This is the callback that will be called when the worker receives a message
-    // from the client. This fnction just prints the message.
+fn nng_callback(aio: Aio, ctx: &Context, res: AioResult, shared_state: SharedState) {
+    // this is the callback that will be called when the server receives a message
     match res {
         // We successfully received a message.
         AioResult::Recv(m) => {
@@ -79,11 +68,11 @@ fn worker_callback(aio: Aio, ctx: &Context, res: AioResult, shared_state: Shared
             ctx.recv(&aio).unwrap();
         }
         // We successfully sent a message.
-        AioResult::Send(m) => {
+        AioResult::Send(_m) => {
             println!("Worker sent message");
         }
         // We are sleeping.
-        AioResult::Sleep(r) => {
+        AioResult::Sleep(_r) => {
             println!("Worker sleeping");
         }
     }
@@ -268,8 +257,8 @@ fn main() -> eframe::Result<()> {
     std::thread::spawn(|| camera_thread_fn(thread_data));
 
     // CREATE A THREAD FOR THE SERVER
-    // let thread_data2 = Arc::clone(&shared_state);
-    // std::thread::spawn(|| server(thread_data2));
+    let thread_data2 = Arc::clone(&shared_state);
+    std::thread::spawn(|| nng_server(thread_data2));
 
     // START GUI
     let gui_data = Arc::clone(&shared_state);

@@ -1,9 +1,6 @@
 // thin wrapper around openpnp_capture
-use openpnp_sys::CapContext;
-use openpnp_sys::CapPropertyID;
-use openpnp_sys::CapStream;
-
 use openpnp_capture_sys as openpnp_sys;
+use openpnp_sys::{CapContext, CapPropertyID, CapStream};
 
 #[derive(Debug, Clone)]
 pub struct CameraOptionInt {
@@ -110,65 +107,144 @@ impl CameraOptions {
     }
 
     // compare two CameraOptions, and returns a copy of self with values that are identical to other set to None
-    pub fn diff(&self, other: &CameraOptions) -> CameraOptions
-    {
+    pub fn diff(&self, other: &CameraOptions) -> CameraOptions {
         let mut diff = self.clone();
 
-        if self.exposure.is_some() && other.exposure.is_some() && self.exposure.as_ref().unwrap().compare(other.exposure.as_ref().unwrap()) {
+        if self.exposure.is_some()
+            && other.exposure.is_some()
+            && self
+                .exposure
+                .as_ref()
+                .unwrap()
+                .compare(other.exposure.as_ref().unwrap())
+        {
             diff.exposure = None;
         }
 
-        if self.gain.is_some() && other.gain.is_some() && self.gain.as_ref().unwrap().compare(other.gain.as_ref().unwrap()) {
+        if self.gain.is_some()
+            && other.gain.is_some()
+            && self
+                .gain
+                .as_ref()
+                .unwrap()
+                .compare(other.gain.as_ref().unwrap())
+        {
             diff.gain = None;
         }
 
-        if self.brightness.is_some() && other.brightness.is_some() && self.brightness.as_ref().unwrap().compare(other.brightness.as_ref().unwrap()) {
+        if self.brightness.is_some()
+            && other.brightness.is_some()
+            && self
+                .brightness
+                .as_ref()
+                .unwrap()
+                .compare(other.brightness.as_ref().unwrap())
+        {
             diff.brightness = None;
         }
 
-        if self.contrast.is_some() && other.contrast.is_some() && self.contrast.as_ref().unwrap().compare(other.contrast.as_ref().unwrap()) {
+        if self.contrast.is_some()
+            && other.contrast.is_some()
+            && self
+                .contrast
+                .as_ref()
+                .unwrap()
+                .compare(other.contrast.as_ref().unwrap())
+        {
             diff.contrast = None;
         }
 
-        if self.saturation.is_some() && other.saturation.is_some() && self.saturation.as_ref().unwrap().compare(other.saturation.as_ref().unwrap()) {
+        if self.saturation.is_some()
+            && other.saturation.is_some()
+            && self
+                .saturation
+                .as_ref()
+                .unwrap()
+                .compare(other.saturation.as_ref().unwrap())
+        {
             diff.saturation = None;
         }
 
-        if self.sharpness.is_some() && other.sharpness.is_some() && self.sharpness.as_ref().unwrap().compare(other.sharpness.as_ref().unwrap()) {
+        if self.sharpness.is_some()
+            && other.sharpness.is_some()
+            && self
+                .sharpness
+                .as_ref()
+                .unwrap()
+                .compare(other.sharpness.as_ref().unwrap())
+        {
             diff.sharpness = None;
         }
 
-        if self.hue.is_some() && other.hue.is_some() && self.hue.as_ref().unwrap().compare(other.hue.as_ref().unwrap()) {
+        if self.hue.is_some()
+            && other.hue.is_some()
+            && self
+                .hue
+                .as_ref()
+                .unwrap()
+                .compare(other.hue.as_ref().unwrap())
+        {
             diff.hue = None;
         }
 
-        if self.gamma.is_some() && other.gamma.is_some() && self.gamma.as_ref().unwrap().compare(other.gamma.as_ref().unwrap()) {
+        if self.gamma.is_some()
+            && other.gamma.is_some()
+            && self
+                .gamma
+                .as_ref()
+                .unwrap()
+                .compare(other.gamma.as_ref().unwrap())
+        {
             diff.gamma = None;
         }
 
-        if self.white_balance.is_some() && other.white_balance.is_some() && self.white_balance.as_ref().unwrap().compare(other.white_balance.as_ref().unwrap()) {
+        if self.white_balance.is_some()
+            && other.white_balance.is_some()
+            && self
+                .white_balance
+                .as_ref()
+                .unwrap()
+                .compare(other.white_balance.as_ref().unwrap())
+        {
             diff.white_balance = None;
         }
 
-        if self.backlight_compensation.is_some() && other.backlight_compensation.is_some() && self.backlight_compensation.as_ref().unwrap().compare(other.backlight_compensation.as_ref().unwrap()) {
+        if self.backlight_compensation.is_some()
+            && other.backlight_compensation.is_some()
+            && self
+                .backlight_compensation
+                .as_ref()
+                .unwrap()
+                .compare(other.backlight_compensation.as_ref().unwrap())
+        {
             diff.backlight_compensation = None;
         }
 
-        if self.auto_exposure.is_some() && other.auto_exposure.is_some() && self.auto_exposure.as_ref().unwrap().compare(other.auto_exposure.as_ref().unwrap()) {
+        if self.auto_exposure.is_some()
+            && other.auto_exposure.is_some()
+            && self
+                .auto_exposure
+                .as_ref()
+                .unwrap()
+                .compare(other.auto_exposure.as_ref().unwrap())
+        {
             diff.auto_exposure = None;
         }
 
-        if self.auto_white_balance.is_some() && other.auto_white_balance.is_some() && self.auto_white_balance.as_ref().unwrap().compare(other.auto_white_balance.as_ref().unwrap()) {
+        if self.auto_white_balance.is_some()
+            && other.auto_white_balance.is_some()
+            && self
+                .auto_white_balance
+                .as_ref()
+                .unwrap()
+                .compare(other.auto_white_balance.as_ref().unwrap())
+        {
             diff.auto_white_balance = None;
         }
 
         diff
-
-
     }
-
 }
-
 
 fn read_camera_properth(
     ctx: CapContext,
@@ -264,7 +340,12 @@ pub fn read_camera_options(ctx: CapContext, stream: CapStream) -> CameraOptions 
     }
 }
 
-pub fn set_camera_property(ctx: CapContext, stream: CapStream, property: CapPropertyID, value: i32) {
+pub fn set_camera_property(
+    ctx: CapContext,
+    stream: CapStream,
+    property: CapPropertyID,
+    value: i32,
+) {
     let res = unsafe { openpnp_sys::Cap_setProperty(ctx, stream, property, value) };
     if res != openpnp_sys::CAPRESULT_OK {
         println!(

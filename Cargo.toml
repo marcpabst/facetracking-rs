@@ -26,6 +26,7 @@ re_ui = "0.8.2"
 rayon = "1.8.0"
 openpnp_capture = "0.2.4"
 openpnp_capture_sys = "0.4.0"
+re_space_view = "0.9.0"
 
 #[dependencies.show-image]
 #version = "0.13.1"

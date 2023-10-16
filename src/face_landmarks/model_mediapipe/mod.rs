@@ -1,24 +1,22 @@
 mod canonical_face_model;
-use canonical_face_model::CANONICAL_FACE_MODEL_POINTS;
-use canonical_face_model::CANONICAL_FACE_MODEL_WEIGHTS;
-use canonical_face_model::CANONICAL_FACE_MODEL_WEIGHTS_LANDMARK_IDS;
+use canonical_face_model::{
+    CANONICAL_FACE_MODEL_POINTS, CANONICAL_FACE_MODEL_WEIGHTS,
+    CANONICAL_FACE_MODEL_WEIGHTS_LANDMARK_IDS,
+};
 use nalgebra::DVector;
 
 use crate::face_landmarks::{FaceLandmarksModel, MetricFaceLandmarks, ScreenFaceLandmarks};
 
 mod procrustes_solver;
-use procrustes_solver::FloatPrecisionProcrustesSolver;
-
 use std::ops::Deref;
 use std::sync::Arc;
 
 use image::DynamicImage;
 use nalgebra::{Dyn, Matrix, Matrix3xX, VecStorage, Vector3, U3};
-
 use ndarray::{Array, CowArray};
-
 use ort::tensor::OrtOwnedTensor;
 use ort::{Environment, ExecutionProvider, InMemorySession, SessionBuilder, Value};
+use procrustes_solver::FloatPrecisionProcrustesSolver;
 
 use self::procrustes_solver::ProcrustesSolver;
 
@@ -275,12 +273,10 @@ impl MediapipeFaceLandmarks {
         //     landmarks.row_mut(1).map(|mut val| *val = 1.0 - *val);
         // }
 
-
         let nscale = &Vector3::new(x_scale, y_scale, x_scale);
         for mut col in landmarks.column_iter_mut() {
             col.component_mul_assign(nscale);
         }
-     
 
         landmarks.column_mut(0).add_scalar_mut(x_translation);
         landmarks.column_mut(1).add_scalar_mut(y_translation);
@@ -313,7 +309,6 @@ impl MediapipeFaceLandmarks {
     ) -> Result<f32, &'static str> {
         // todo> change this for performance
         // convert CANONICAL_FACE_MODEL_POINTS into a Matrix3X
-
 
         let transform_mat = procrustes_solver
             .solve_weighted_orthogonal_problem(
@@ -392,7 +387,7 @@ impl ScreenFaceLandmarks for MediapipeFaceLandmarks {
             &PerspectiveCamera {
                 vertical_fov_degrees: 90.0,
                 near: 0.01,
-                far: 10000.0,
+                //far: 10000.0,
             },
             self.image_width as i32,
             self.image_height as i32,
@@ -436,8 +431,6 @@ impl ScreenFaceLandmarks for MediapipeFaceLandmarks {
 
         intermediate_landmarks = screen_landmarks_matrix.clone();
 
-
-
         // 2nd iteration: unproject XY using the scale from the 1st iteration.
         intermediate_landmarks = self.move_and_rescale_z(
             &pcf,
@@ -445,8 +438,6 @@ impl ScreenFaceLandmarks for MediapipeFaceLandmarks {
             first_iteration_scale,
             intermediate_landmarks,
         );
-
-
 
         intermediate_landmarks = self.unproject_xy(&pcf, intermediate_landmarks);
         intermediate_landmarks = self.change_handedness(intermediate_landmarks);
@@ -517,7 +508,7 @@ pub struct MediapipeFaceLandmarksModel<'a> {
 impl MediapipeFaceLandmarksModel<'_> {
     pub fn new() -> MediapipeFaceLandmarksModel<'static> {
         let enviroment = Environment::builder()
-            .with_execution_providers([ExecutionProvider::CoreML(Default::default())])
+            .with_execution_providers([ExecutionProvider::CPU(Default::default())])
             .build()
             .unwrap()
             .into_arc();
@@ -533,14 +524,16 @@ impl MediapipeFaceLandmarksModel<'_> {
 
         MediapipeFaceLandmarksModel {
             session: Arc::new(session),
-    
         }
     }
 }
 
 impl FaceLandmarksModel for MediapipeFaceLandmarksModel<'_> {
-    fn run(&self, input: &DynamicImage, face_bbox: Option<(u32, u32, u32, u32)>) -> (Box<dyn ScreenFaceLandmarks>, (u32, u32, u32, u32)) {
-        
+    fn run(
+        &self,
+        input: &DynamicImage,
+        face_bbox: Option<(u32, u32, u32, u32)>,
+    ) -> (Box<dyn ScreenFaceLandmarks>, (u32, u32, u32, u32)) {
         // if face bounding box is set, crop the image accordingly
         let face_bbox = face_bbox.unwrap_or((0, 0, 720, 720));
 
@@ -615,17 +608,14 @@ impl FaceLandmarksModel for MediapipeFaceLandmarksModel<'_> {
         // update face bounding box if a face was detected (more than 90% confidence)
         if face_landmarks.face_confidence > 0.5 {
             face_bbox = face_landmarks.get_face_bbox_from_landmarks();
-        }
-        else {
+        } else {
             // use original face bounding box
             face_bbox = original_face_bbox;
         }
 
         (Box::new(face_landmarks), face_bbox)
     }
-    
 }
-
 
 pub fn ray_sphere_intersect(
     ray_origin: Point3,
@@ -687,7 +677,7 @@ fn adjust_bbox(x: i32, y: i32, w: i32, h: i32, image_w: u32, image_h: u32) -> (u
 pub struct PerspectiveCamera {
     vertical_fov_degrees: f32,
     near: f32,
-    far: f32,
+    //far: f32,
 }
 
 pub struct PerspectiveCameraFrustum {
@@ -696,7 +686,7 @@ pub struct PerspectiveCameraFrustum {
     bottom: f32,
     top: f32,
     near: f32,
-    far: f32,
+    //far: f32,
 }
 
 impl PerspectiveCameraFrustum {
@@ -715,7 +705,7 @@ impl PerspectiveCameraFrustum {
             bottom: -0.5 * height_at_near,
             top: 0.5 * height_at_near,
             near: perspective_camera.near,
-            far: perspective_camera.far,
+            //far: perspective_camera.far,
         }
     }
 }

@@ -23,5 +23,9 @@ trait FaceLandmarks: ScreenFaceLandmarks + MetricFaceLandmarks {}
 
 // define FaceLandmarksModel trait
 pub trait FaceLandmarksModel {
-    fn run(&self, image: &DynamicImage, face_bbox: Option<(u32, u32, u32, u32)>) -> (Box<dyn ScreenFaceLandmarks>, (u32, u32, u32, u32));
-} 
+    fn run(
+        &self,
+        image: &DynamicImage,
+        face_bbox: Option<(u32, u32, u32, u32)>,
+    ) -> (Box<dyn ScreenFaceLandmarks>, (u32, u32, u32, u32));
+}

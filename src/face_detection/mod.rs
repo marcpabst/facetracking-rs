@@ -1,8 +1,8 @@
 pub mod model_blazeface;
 
-use image::DynamicImage;
 use core::fmt::Debug;
 
+use image::DynamicImage;
 
 pub trait FaceDetectionModel {
     fn run(&self, image: &DynamicImage) -> Box<dyn FaceBoundingBox>;
@@ -29,7 +29,6 @@ pub trait FaceBoundingBox {
     /// The tuple elements correspond to the x and y coordinates of the top-left corner, and the width and height of the rectangle, respectively.
     fn to_tuple(&self) -> (u32, u32, u32, u32);
 }
-
 
 impl Debug for dyn FaceBoundingBox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

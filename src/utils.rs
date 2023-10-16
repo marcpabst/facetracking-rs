@@ -61,8 +61,6 @@ impl Default for State {
     }
 }
 
-
-
 pub struct TimeSeries {
     data: VecDeque<f32>,
     timestamp: VecDeque<u128>,
@@ -70,7 +68,7 @@ pub struct TimeSeries {
 }
 
 impl TimeSeries {
-    fn new(max_length: usize) -> Self {
+    pub fn new(max_length: usize) -> Self {
         Self {
             data: VecDeque::new(),
             timestamp: VecDeque::new(),
@@ -78,7 +76,7 @@ impl TimeSeries {
         }
     }
 
-    fn push(&mut self, value: f32, timestamp: u128) {
+    pub fn push(&mut self, value: f32, timestamp: u128) {
         self.data.push_back(value);
         self.timestamp.push_back(timestamp);
 
@@ -88,7 +86,7 @@ impl TimeSeries {
         }
     }
 
-    fn get_mean(&self) -> f32 {
+    pub fn get_mean(&self) -> f32 {
         self.data.iter().sum::<f32>() / self.data.len() as f32
     }
 }

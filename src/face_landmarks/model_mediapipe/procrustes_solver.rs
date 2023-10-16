@@ -1,11 +1,8 @@
 // translated from mediapipe/modules/face_geometry/libs/procrustes_solver.cc
 
-
-use nalgebra::{DVector, Dyn, Matrix, Matrix3, Matrix3xX, Matrix4,
-    VecStorage, Vector3, U3,
-};
-
 use std::f32::EPSILON;
+
+use nalgebra::{DVector, Dyn, Matrix, Matrix3, Matrix3xX, Matrix4, VecStorage, Vector3, U3};
 
 // define Matrix3X as a type alias for
 type Matrix3X<T> = Matrix<T, U3, Dyn, VecStorage<T, U3, Dyn>>;
@@ -26,44 +23,43 @@ impl FloatPrecisionProcrustesSolver {
         FloatPrecisionProcrustesSolver
     }
 
-    fn validate_input_points(
-        source_points: &Matrix3xX<f32>,
-        target_points: &Matrix3xX<f32>,
-    ) -> Result<(), &'static str> {
-        if source_points.ncols() == 0 {
-            return Err("The number of source points must be positive!");
-        }
+    // fn validate_input_points(
+    //     source_points: &Matrix3xX<f32>,
+    //     target_points: &Matrix3xX<f32>,
+    // ) -> Result<(), &'static str> {
+    //     if source_points.ncols() == 0 {
+    //         return Err("The number of source points must be positive!");
+    //     }
 
-        if source_points.ncols() != target_points.ncols() {
-            return Err("The number of source and target points must be equal!");
-        }
+    //     if source_points.ncols() != target_points.ncols() {
+    //         return Err("The number of source and target points must be equal!");
+    //     }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
-    fn validate_point_weights(
-        num_points: usize,
-        point_weights: &DVector<f32>,
-    ) -> Result<(), &'static str> {
-        if point_weights.len() == 0 {
-            return Err("The number of point weights must be positive!");
-        }
+    // fn validate_point_weights(
+    //     num_points: usize,
+    //     point_weights: &DVector<f32>,
+    // ) -> Result<(), &'static str> {
+    //     if point_weights.len() == 0 {
+    //         return Err("The number of point weights must be positive!");
+    //     }
 
-        if point_weights.len() != num_points {
-            return Err("The number of points and point weights must be equal!");
-        }
+    //     if point_weights.len() != num_points {
+    //         return Err("The number of points and point weights must be equal!");
+    //     }
 
-        let total_weight: f32 = point_weights.iter().sum();
+    //     let total_weight: f32 = point_weights.iter().sum();
 
-        if total_weight <= EPSILON {
-            return Err("The total point weight is too small!");
-        }
+    //     if total_weight <= EPSILON {
+    //         return Err("The total point weight is too small!");
+    //     }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
-    fn extract_square_root(point_weights: &DVector<f32>) -> DVector<f32> 
-    {
+    fn extract_square_root(point_weights: &DVector<f32>) -> DVector<f32> {
         let out = point_weights.map(|x| x.sqrt());
         // convert to DVector
         let out = DVector::from_row_slice(out.as_slice());
@@ -108,15 +104,18 @@ impl FloatPrecisionProcrustesSolver {
         result
     }
 
-    fn rowwise_elementwise_multiply(matrix: &Matrix3X<f32>, vector: &DVector<f32>) -> Matrix3X<f32> {
+    fn rowwise_elementwise_multiply(
+        matrix: &Matrix3X<f32>,
+        vector: &DVector<f32>,
+    ) -> Matrix3X<f32> {
         // bounds checking
         assert_eq!(matrix.ncols(), vector.len());
-        
+
         let mut result = matrix.clone();
         for i in 0..3 {
             result.row_mut(i).component_mul_assign(&vector.transpose());
         }
-    
+
         result
     }
 
@@ -127,15 +126,13 @@ impl FloatPrecisionProcrustesSolver {
     ) -> Result<Matrix4<f32>, &'static str> {
         // perform row-wise multiplication of sources and sqrt_weights
 
-       
         let weighted_sources = Self::rowwise_elementwise_multiply(sources, sqrt_weights);
         let weighted_targets = Self::rowwise_elementwise_multiply(targets, sqrt_weights);
 
-      
         let total_weight = sqrt_weights.component_mul(&sqrt_weights).sum();
 
-       
-        let twice_weighted_sources = Self::rowwise_elementwise_multiply(&weighted_sources, sqrt_weights);
+        let twice_weighted_sources =
+            Self::rowwise_elementwise_multiply(&weighted_sources, sqrt_weights);
 
         let source_center_of_mass = twice_weighted_sources.column_sum() / total_weight;
 
@@ -157,7 +154,8 @@ impl FloatPrecisionProcrustesSolver {
         let rotation_and_scale = scale * rotation;
 
         let pointwise_diffs = weighted_targets - rotation_and_scale * weighted_sources;
-        let weighted_pointwise_diffs = Self::rowwise_elementwise_multiply(&pointwise_diffs, sqrt_weights);
+        let weighted_pointwise_diffs =
+            Self::rowwise_elementwise_multiply(&pointwise_diffs, sqrt_weights);
 
         let translation: Vector3<f32> = weighted_pointwise_diffs.column_sum() / total_weight;
 
@@ -208,22 +206,19 @@ impl FloatPrecisionProcrustesSolver {
     }
 }
 
-
 impl ProcrustesSolver for FloatPrecisionProcrustesSolver {
     fn solve_weighted_orthogonal_problem(
         &self,
         source_points: &Matrix3xX<f32>,
         target_points: &Matrix3xX<f32>,
         point_weights: &DVector<f32>,
-    )
-    
-    -> Result<Matrix4<f32>, &'static str> {
+    ) -> Result<Matrix4<f32>, &'static str> {
         // Validate inputs.
         //Self::validate_input_points(source_points, target_points)?;
 
         //Self::validate_point_weights(source_points.ncols(), point_weights)?;
 
-        // 
+        //
 
         // Extract square root from the point weights.
         let sqrt_weights = Self::extract_square_root(point_weights);
